@@ -61,6 +61,40 @@ def get_liquid_symbols(min_vol):
     ]
 
 # =====================================================
+# TELEGRAM
+# =====================================================
+def send_telegram(msg):
+    try:
+        token = st.secrets["TELEGRAM_BOT_TOKEN"]
+        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        requests.post(
+            url,
+            json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"},
+            timeout=10
+        )
+    except:
+        pass
+
+def format_alert(symbol, candle, entry, sl, tp, risk, vo):
+    return f"""
+🚀 *FIXED-R SIGNAL*
+
+*Symbol:* `{symbol}`
+*Candle:* {candle}
+
+*Entry:* `{fmt_price(entry)}`
+*SL:* `{fmt_price(sl)}`
+*TP (1R):* `{fmt_price(tp)}`
+
+*Risk:* {risk}%
+*VO:* {vo}
+
+⏰ TF: 4H  
+📌 Entry on candle close
+"""
+
+# =====================================================
 # INDICATORS
 # =====================================================
 def supertrend(df, period, mult):
@@ -94,7 +128,7 @@ def volume_oscillator(v, f, s):
     return (ef - es) / es * 100
 
 # =====================================================
-# PRICE ACTION
+# PRICE KNOWLEDGE
 # =====================================================
 def detect_candle(df):
     o, h, l, c = df.open, df.high, df.low, df.close
@@ -121,19 +155,15 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# ENTRY LOGIC (FINAL)
+# ENTRY + TRADE
 # =====================================================
 def valid_entry(df, stl, trend, vo):
-    flip = trend.iloc[-1] == 1 and trend.iloc[-2] == -1
-    return flip and vo.iloc[-1] >= 5
+    return trend.iloc[-1] == 1 and trend.iloc[-2] == -1 and vo.iloc[-1] >= 5
 
-# =====================================================
-# BUILD FIXED-R TRADE
-# =====================================================
+
 def build_trade_fixed_r(df4h, df1d):
     entry = df4h.close.iloc[-1]
-    supports = find_support(df1d, SR_LOOKBACK)
-    supports = [s for s in supports if s < entry]
+    supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
     if not supports:
         return None
 
@@ -146,7 +176,7 @@ def build_trade_fixed_r(df4h, df1d):
     return entry, sl, tp
 
 # =====================================================
-# BACKTEST ENGINE
+# BACKTEST
 # =====================================================
 def backtest_symbol(okx, symbol):
     df = pd.DataFrame(
@@ -158,7 +188,6 @@ def backtest_symbol(okx, symbol):
 
     for i in range(120, len(df) - MAX_FORWARD):
         slice = df.iloc[:i+1]
-
         stl, trend = supertrend(slice, ATR_PERIOD, MULTIPLIER)
         vo = volume_oscillator(slice.volume, VO_FAST, VO_SLOW)
 
@@ -183,11 +212,9 @@ def backtest_symbol(okx, symbol):
 
         for j in range(i+2, min(i+MAX_FORWARD, len(df))):
             if df.high.iloc[j] >= tp:
-                rr = 1
-                break
+                rr = 1; break
             if df.low.iloc[j] <= sl:
-                rr = -1
-                break
+                rr = -1; break
 
         if rr is not None:
             trades.append({"Symbol": symbol, "RR": rr, "Win": rr > 0})
@@ -198,45 +225,21 @@ def backtest_symbol(okx, symbol):
 # EQUITY CURVE
 # =====================================================
 def plot_equity_curve(bt):
-    df = bt.copy()
-    df["Trade #"] = range(1, len(df) + 1)
-    df["Equity (R)"] = df["RR"].cumsum()
+    bt = bt.copy()
+    bt["Trade #"] = range(1, len(bt) + 1)
+    bt["Equity (R)"] = bt["RR"].cumsum()
 
     fig = go.Figure(go.Scatter(
-        x=df["Trade #"],
-        y=df["Equity (R)"],
-        mode="lines+markers",
-        line=dict(width=3)
+        x=bt["Trade #"], y=bt["Equity (R)"],
+        mode="lines+markers", line=dict(width=3)
     ))
 
     fig.update_layout(
         title="📈 Equity Curve (Fixed-R System)",
-        xaxis_title="Trade Number",
+        xaxis_title="Trade #",
         yaxis_title="Cumulative R",
         template="plotly_dark",
         height=500
-    )
-    return fig
-
-# =====================================================
-# CHART
-# =====================================================
-def plot_trade_chart(df, entry, sl, tp, symbol):
-    fig = go.Figure(go.Candlestick(
-        x=df.index,
-        open=df.open,
-        high=df.high,
-        low=df.low,
-        close=df.close
-    ))
-    fig.add_hline(y=entry, line_color="blue", annotation_text="Entry")
-    fig.add_hline(y=sl, line_color="red", line_dash="dash", annotation_text="SL")
-    fig.add_hline(y=tp, line_color="green", line_dash="dot", annotation_text="TP (1R)")
-    fig.update_layout(
-        title=f"{symbol} — Fixed-R Setup",
-        height=600,
-        xaxis_rangeslider_visible=False,
-        template="plotly_dark"
     )
     return fig
 
@@ -245,7 +248,7 @@ def plot_trade_chart(df, entry, sl, tp, symbol):
 # =====================================================
 st.set_page_config("OKX Fixed-R System", layout="wide")
 st.title("🚀 OKX Spot Screener & Backtest — Fixed-R System")
-st.title("✅ Run screener di 23:00 WIB (WAJIB) ➕ optional 19:00 WIB")
+st.success("✅ Run screener di 23:00 WIB (WAJIB) + optional 19:00 WIB")
 
 tab1, tab2 = st.tabs(["🔍 Screener", "🧪 Backtest"])
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
@@ -257,13 +260,9 @@ with tab1:
     if st.button("🔍 Run Screener"):
         symbols = get_liquid_symbols(MIN_USDT_VOLUME)
         results, charts = [], {}
-        progress = st.progress(0)
-        status = st.empty()
 
         with st.spinner("Scanning market..."):
-            for i, s in enumerate(symbols):
-                status.info(f"Scanning {s} ({i+1}/{len(symbols)})")
-                progress.progress((i+1)/len(symbols))
+            for s in symbols:
                 try:
                     df4h = pd.DataFrame(
                         okx.fetch_ohlcv(s, ENTRY_TF, limit=LIMIT_4H),
@@ -289,36 +288,32 @@ with tab1:
                         continue
 
                     entry, sl, tp = trade
+                    risk = round((entry - sl) / entry * 100, 2)
+
                     results.append({
                         "Symbol": s,
                         "Candle": candle,
                         "Entry": fmt_price(entry),
-                        "Stop Loss": fmt_price(sl),
-                        "Take Profit (1R)": fmt_price(tp),
-                        "Risk %": round((entry - sl) / entry * 100, 2),
+                        "SL": fmt_price(sl),
+                        "TP (1R)": fmt_price(tp),
+                        "Risk %": risk,
                         "VO %": round(vo.iloc[-1], 2)
                     })
-                    charts[s] = (df4h, entry, sl, tp)
+
+                    send_telegram(format_alert(
+                        s, candle, entry, sl, tp, risk, round(vo.iloc[-1], believe=2)
+                    ))
+
                 except:
                     pass
                 time.sleep(RATE_LIMIT_DELAY)
 
-        progress.empty()
-        status.empty()
-
         if results:
-            st.session_state.scanned = True
             st.session_state.results = pd.DataFrame(results)
-            st.session_state.chart_data = charts
             st.success(f"Found {len(results)} setups")
+            st.dataframe(st.session_state.results, use_container_width=True)
         else:
             st.warning("No valid setup found")
-
-    if st.session_state.scanned:
-        st.dataframe(st.session_state.results, use_container_width=True)
-        sym = st.selectbox("Select Symbol", st.session_state.results["Symbol"])
-        df, entry, sl, tp = st.session_state.chart_data[sym]
-        st.plotly_chart(plot_trade_chart(df.tail(120), entry, sl, tp, sym), use_container_width=True)
 
 # =====================================================
 # TAB 2 — BACKTEST
@@ -327,34 +322,21 @@ with tab2:
     if st.button("🧪 Run Backtest"):
         symbols = get_liquid_symbols(MIN_USDT_VOLUME)
         all_bt = []
-        progress = st.progress(0)
-        status = st.empty()
 
         with st.spinner("Running backtest..."):
-            for i, s in enumerate(symbols):
-                status.info(f"Backtesting {s} ({i+1}/{len(symbols)})")
-                progress.progress((i+1)/len(symbols))
+            for s in symbols:
                 try:
-                    df_bt = backtest_symbol(okx, s)
-                    if not df_bt.empty:
-                        all_bt.append(df_bt)
+                    bt = backtest_symbol(okx, s)
+                    if not bt.empty:
+                        all_bt.append(bt)
                 except:
                     pass
-
-        progress.empty()
-        status.empty()
 
         if all_bt:
             bt = pd.concat(all_bt, ignore_index=True)
             st.metric("Total Trades", len(bt))
             st.metric("Winrate %", round(bt["Win"].mean()*100, 2))
             st.metric("Avg RR", round(bt["RR"].mean(), 2))
-
-            st.subheader("📈 Equity Curve")
             st.plotly_chart(plot_equity_curve(bt), use_container_width=True)
-
-            st.subheader("🧾 Last Trades")
-            st.dataframe(bt.tail(50), use_container_width=True)
         else:
-            st.warning("No trades found in backtest")
-
+            st.warning("No trades found")
