@@ -245,6 +245,7 @@ def plot_trade_chart(df, entry, sl, tp, symbol):
 # =====================================================
 st.set_page_config("OKX Fixed-R System", layout="wide")
 st.title("🚀 OKX Spot Screener & Backtest — Fixed-R System")
+st.title("✅ Run screener di 23:00 WIB (WAJIB) ➕ optional 19:00 WIB")
 
 tab1, tab2 = st.tabs(["🔍 Screener", "🧪 Backtest"])
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
@@ -356,3 +357,4 @@ with tab2:
             st.dataframe(bt.tail(50), use_container_width=True)
         else:
             st.warning("No trades found in backtest")
+
