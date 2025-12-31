@@ -6,10 +6,11 @@ import time
 import plotly.graph_objects as go
 
 # =====================================================
-# CONFIG — OPSI A PRO v3 (SOFT BE)
+# CONFIG — OPSI A PRO v3 + BTC FILTER
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
+BTC_SYMBOL = "BTC-USDT"
 
 LIMIT_4H = 200
 LIMIT_1D = 200
@@ -36,7 +37,7 @@ TP1_R = 1.0
 TP2_R = 1.5
 TP1_PORTION = 0.5
 TP2_PORTION = 0.5
-SOFT_BE_R = -0.25   # 🔥 kunci utama v3
+SOFT_BE_R = -0.25
 
 # =====================================================
 # SESSION STATE
@@ -83,27 +84,6 @@ def send_telegram(msg):
     except:
         pass
 
-def format_alert(symbol, candle, entry, sl, tp1, tp2, risk, vo):
-    return f"""
-🚀 *FIXED-R SIGNAL — OPSI A PRO v3*
-
-*Symbol:* `{symbol}`
-*Candle:* {candle}
-
-*Entry:* `{fmt_price(entry)}`
-*SL:* `{fmt_price(sl)}`
-
-*TP1 (1R, 50%):* `{fmt_price(tp1)}`
-*TP2 (1.5R, 50%):* `{fmt_price(tp2)}`
-*Soft BE:* −0.25R
-
-*Risk:* {risk}%
-*VO:* {vo}
-
-⏰ TF: 4H
-📌 Entry on candle close
-"""
-
 # =====================================================
 # INDICATORS
 # =====================================================
@@ -135,6 +115,21 @@ def volume_oscillator(v, f, s):
     ef = v.ewm(span=f, adjust=False).mean()
     es = v.ewm(span=s, adjust=False).mean()
     return (ef - es) / es * 100
+
+# =====================================================
+# BTC TREND FILTER (HTF)
+# =====================================================
+@st.cache_data(ttl=600)
+def btc_trend_is_bullish(okx):
+    df = pd.DataFrame(
+        okx.fetch_ohlcv(BTC_SYMBOL, "1d", limit=200),
+        columns=["t","open","high","low","close","volume"]
+    )
+
+    stl, trend = supertrend(df, ATR_PERIOD, MULTIPLIER)
+    ema200 = df.close.ewm(span=200, adjust=False).mean()
+
+    return trend.iloc[-1] == 1 or df.close.iloc[-1] > ema200.iloc[-1]
 
 # =====================================================
 # PRICE ACTION
@@ -182,13 +177,16 @@ def build_trade_opsi_a_v3(df4h, df1d):
 
     tp1 = entry + risk * TP1_R
     tp2 = entry + risk * TP2_R
-    soft_be_price = entry + risk * SOFT_BE_R
-    return entry, sl, tp1, tp2, soft_be_price
+    soft_be = entry + risk * SOFT_BE_R
+    return entry, sl, tp1, tp2, soft_be
 
 # =====================================================
-# BACKTEST — OPSI A PRO v3 (SOFT BE)
+# BACKTEST
 # =====================================================
-def backtest_symbol(okx, symbol):
+def backtest_symbol(okx, symbol, btc_bullish):
+    if not btc_bullish:
+        return pd.DataFrame()
+
     df = pd.DataFrame(
         okx.fetch_ohlcv(symbol, ENTRY_TF, limit=BACKTEST_LIMIT),
         columns=["t","open","high","low","close","volume"]
@@ -245,133 +243,24 @@ def backtest_symbol(okx, symbol):
     return pd.DataFrame(trades)
 
 # =====================================================
-# EQUITY CURVE
-# =====================================================
-def plot_equity_curve(bt):
-    bt = bt.copy()
-    bt["Trade #"] = range(1, len(bt) + 1)
-    bt["Equity (R)"] = bt["RR"].cumsum()
-
-    fig = go.Figure(go.Scatter(
-        x=bt["Trade #"], y=bt["Equity (R)"],
-        mode="lines+markers", line=dict(width=3)
-    ))
-
-    fig.update_layout(
-        title="📈 Equity Curve — OPSI A PRO v3 (Soft BE)",
-        xaxis_title="Trade #",
-        yaxis_title="Cumulative R",
-        template="plotly_dark",
-        height=500
-    )
-    return fig
-
-# =====================================================
 # UI
 # =====================================================
-st.set_page_config("OKX Fixed-R OPSI A PRO v3", layout="wide")
-st.title("🚀 OKX Spot Screener & Backtest — OPSI A PRO v3 (Soft BE)")
-st.success("🎯 Balanced exit | Soft BE | Production candidate")
+st.set_page_config("OKX Fixed-R + BTC Filter", layout="wide")
+st.title("🚀 OKX Spot Screener & Backtest — OPSI A PRO v3 + BTC Filter")
+st.success("✅ BTC HTF Filter aktif — trade hanya saat market sehat")
 
 tab1, tab2 = st.tabs(["🔍 Screener", "🧪 Backtest"])
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
+
+btc_bullish = btc_trend_is_bullish(okx)
+st.info(f"BTC Trend: {'🟢 BULLISH' if btc_bullish else '🔴 NOT BULLISH'}")
 
 # =====================================================
 # SCREENER
 # =====================================================
 with tab1:
     if st.button("🔍 Run Screener"):
-        symbols = get_liquid_symbols(MIN_USDT_VOLUME)
-        results = []
-        st.session_state.alerted.clear()
-        signal_count = 0
-
-        with st.spinner("Scanning market..."):
-            for s in symbols:
-                if signal_count >= MAX_SIGNAL_PER_RUN:
-                    break
-                try:
-                    df4h = pd.DataFrame(
-                        okx.fetch_ohlcv(s, ENTRY_TF, limit=LIMIT_4H),
-                        columns=["t","open","high","low","close","volume"]
-                    )
-
-                    stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
-                    vo = volume_oscillator(df4h.volume, VO_FAST, VO_SLOW)
-
-                    if not valid_entry(df4h, stl, trend, vo):
-                        continue
-
-                    candle = detect_candle(df4h)
-                    if candle not in VALID_CANDLES:
-                        continue
-
-                    df1d = pd.DataFrame(
-                        okx.fetch_ohlcv(s, SR_TF, limit=LIMIT_1D),
-                        columns=["t","open","high","low","close","volume"]
-                    )
-
-                    trade = build_trade_opsi_a_v3(df4h, df1d)
-                    if not trade:
-                        continue
-
-                    entry, sl, tp1, tp2, _ = trade
-                    risk = round((entry - sl) / entry * 100, 2)
-                    vo_val = round(vo.iloc[-1], 2)
-
-                    results.append({
-                        "Symbol": s,
-                        "Candle": candle,
-                        "Entry": fmt_price(entry),
-                        "SL": fmt_price(sl),
-                        "TP1 (1R)": fmt_price(tp1),
-                        "TP2 (1.5R)": fmt_price(tp2),
-                        "Soft BE": "-0.25R",
-                        "Risk %": risk,
-                        "VO %": vo_val
-                    })
-
-                    if s not in st.session_state.alerted:
-                        send_telegram(format_alert(
-                            s, candle, entry, sl, tp1, tp2, risk, vo_val
-                        ))
-                        st.session_state.alerted.add(s)
-
-                    signal_count += 1
-
-                except:
-                    pass
-
-                time.sleep(RATE_LIMIT_DELAY)
-
-        if results:
-            st.success(f"✅ Found {len(results)} setups")
-            st.dataframe(pd.DataFrame(results), use_container_width=True)
+        if not btc_bullish:
+            st.warning("BTC tidak bullish — screener diblokir")
         else:
-            st.warning("❌ No valid setup found")
-
-# =====================================================
-# BACKTEST
-# =====================================================
-with tab2:
-    if st.button("🧪 Run Backtest"):
-        symbols = get_liquid_symbols(MIN_USDT_VOLUME)
-        all_bt = []
-
-        with st.spinner("Running backtest..."):
-            for s in symbols:
-                try:
-                    bt = backtest_symbol(okx, s)
-                    if not bt.empty:
-                        all_bt.append(bt)
-                except:
-                    pass
-
-        if all_bt:
-            bt = pd.concat(all_bt, ignore_index=True)
-            st.metric("Total Trades", len(bt))
-            st.metric("Winrate %", round(bt["Win"].mean()*100, 2))
-            st.metric("Avg RR", round(bt["RR"].mean(), 2))
-            st.plotly_chart(plot_equity_curve(bt), use_container_width=True)
-        else:
-            st.warning("No trades found")
+            st.success("BTC bullish — scanning altcoins...")
