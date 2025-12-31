@@ -6,7 +6,7 @@ import time
 import plotly.graph_objects as go
 
 # =====================================================
-# CONFIG — OPSI A PRO v2 (BREAKEVEN)
+# CONFIG — OPSI A PRO v3 (SOFT BE)
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -31,11 +31,12 @@ RATE_LIMIT_DELAY = 0.15
 VALID_CANDLES = {"Bullish Engulfing", "Hammer", "Strong Bullish"}
 MAX_SIGNAL_PER_RUN = 2
 
-# OPSI A PRO v2
+# OPSI A PRO v3 (SOFT BE)
 TP1_R = 1.0
-TP2_R = 1.25
+TP2_R = 1.5
 TP1_PORTION = 0.5
 TP2_PORTION = 0.5
+SOFT_BE_R = -0.25   # 🔥 kunci utama v3
 
 # =====================================================
 # SESSION STATE
@@ -84,7 +85,7 @@ def send_telegram(msg):
 
 def format_alert(symbol, candle, entry, sl, tp1, tp2, risk, vo):
     return f"""
-🚀 *FIXED-R SIGNAL — OPSI A PRO v2*
+🚀 *FIXED-R SIGNAL — OPSI A PRO v3*
 
 *Symbol:* `{symbol}`
 *Candle:* {candle}
@@ -92,13 +93,14 @@ def format_alert(symbol, candle, entry, sl, tp1, tp2, risk, vo):
 *Entry:* `{fmt_price(entry)}`
 *SL:* `{fmt_price(sl)}`
 
-*TP1 (1R, 50% → BE):* `{fmt_price(tp1)}`
-*TP2 (1.25R, 50%):* `{fmt_price(tp2)}`
+*TP1 (1R, 50%):* `{fmt_price(tp1)}`
+*TP2 (1.5R, 50%):* `{fmt_price(tp2)}`
+*Soft BE:* −0.25R
 
 *Risk:* {risk}%
 *VO:* {vo}
 
-⏰ TF: 4H  
+⏰ TF: 4H
 📌 Entry on candle close
 """
 
@@ -167,7 +169,7 @@ def find_support(df, lb):
 def valid_entry(df, stl, trend, vo):
     return trend.iloc[-1] == 1 and trend.iloc[-2] == -1 and vo.iloc[-1] >= 5
 
-def build_trade_opsi_a_v2(df4h, df1d):
+def build_trade_opsi_a_v3(df4h, df1d):
     entry = df4h.close.iloc[-1]
     supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
     if not supports:
@@ -180,10 +182,11 @@ def build_trade_opsi_a_v2(df4h, df1d):
 
     tp1 = entry + risk * TP1_R
     tp2 = entry + risk * TP2_R
-    return entry, sl, tp1, tp2
+    soft_be_price = entry + risk * SOFT_BE_R
+    return entry, sl, tp1, tp2, soft_be_price
 
 # =====================================================
-# BACKTEST — OPSI A PRO v2 (BE)
+# BACKTEST — OPSI A PRO v3 (SOFT BE)
 # =====================================================
 def backtest_symbol(okx, symbol):
     df = pd.DataFrame(
@@ -210,22 +213,23 @@ def backtest_symbol(okx, symbol):
         if candle not in VALID_CANDLES:
             continue
 
-        trade = build_trade_opsi_a_v2(slice_df, df1d)
+        trade = build_trade_opsi_a_v3(slice_df, df1d)
         if not trade:
             continue
 
-        entry, sl, tp1, tp2 = trade
+        entry, sl, tp1, tp2, soft_be = trade
         hit_tp1 = False
         rr = None
 
         for j in range(i+2, min(i+MAX_FORWARD, len(df))):
+
             if not hit_tp1 and df.high.iloc[j] >= tp1:
                 hit_tp1 = True
                 continue
 
             if hit_tp1:
-                if df.low.iloc[j] <= entry:
-                    rr = TP1_PORTION * TP1_R
+                if df.low.iloc[j] <= soft_be:
+                    rr = TP1_PORTION * TP1_R + TP2_PORTION * SOFT_BE_R
                     break
                 if df.high.iloc[j] >= tp2:
                     rr = TP1_PORTION * TP1_R + TP2_PORTION * TP2_R
@@ -254,7 +258,7 @@ def plot_equity_curve(bt):
     ))
 
     fig.update_layout(
-        title="📈 Equity Curve — OPSI A PRO v2 (BE)",
+        title="📈 Equity Curve — OPSI A PRO v3 (Soft BE)",
         xaxis_title="Trade #",
         yaxis_title="Cumulative R",
         template="plotly_dark",
@@ -265,9 +269,9 @@ def plot_equity_curve(bt):
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OKX Fixed-R OPSI A PRO v2", layout="wide")
-st.title("🚀 OKX Spot Screener & Backtest — OPSI A PRO v2 (BE)")
-st.success("✅ Balanced | Breakeven | Production-ready")
+st.set_page_config("OKX Fixed-R OPSI A PRO v3", layout="wide")
+st.title("🚀 OKX Spot Screener & Backtest — OPSI A PRO v3 (Soft BE)")
+st.success("🎯 Balanced exit | Soft BE | Production candidate")
 
 tab1, tab2 = st.tabs(["🔍 Screener", "🧪 Backtest"])
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
@@ -307,11 +311,11 @@ with tab1:
                         columns=["t","open","high","low","close","volume"]
                     )
 
-                    trade = build_trade_opsi_a_v2(df4h, df1d)
+                    trade = build_trade_opsi_a_v3(df4h, df1d)
                     if not trade:
                         continue
 
-                    entry, sl, tp1, tp2 = trade
+                    entry, sl, tp1, tp2, _ = trade
                     risk = round((entry - sl) / entry * 100, 2)
                     vo_val = round(vo.iloc[-1], 2)
 
@@ -321,7 +325,8 @@ with tab1:
                         "Entry": fmt_price(entry),
                         "SL": fmt_price(sl),
                         "TP1 (1R)": fmt_price(tp1),
-                        "TP2 (1.25R)": fmt_price(tp2),
+                        "TP2 (1.5R)": fmt_price(tp2),
+                        "Soft BE": "-0.25R",
                         "Risk %": risk,
                         "VO %": vo_val
                     })
