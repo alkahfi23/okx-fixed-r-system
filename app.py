@@ -6,7 +6,7 @@ import time
 import plotly.graph_objects as go
 
 # =====================================================
-# CONFIG — OPSI B (TP 2R)
+# CONFIG — OPSI A PRO (PARTIAL TP)
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -14,7 +14,7 @@ SR_TF = "1d"
 LIMIT_4H = 200
 LIMIT_1D = 200
 BACKTEST_LIMIT = 600
-MAX_FORWARD = 80           # ⏳ beri waktu capai 2R
+MAX_FORWARD = 80
 
 ATR_PERIOD = 10
 MULTIPLIER = 3.0
@@ -30,8 +30,13 @@ RATE_LIMIT_DELAY = 0.15
 
 VALID_CANDLES = {"Bullish Engulfing", "Hammer", "Strong Bullish"}
 
-TP_MULTIPLIER = 2.0        # 🔥 OPSI B
-MAX_SIGNAL_PER_RUN = 2     # 🔐 anti overtrade
+MAX_SIGNAL_PER_RUN = 2   # anti overtrade
+
+# OPSI A PRO
+TP1_R = 1.0
+TP2_R = 1.5
+TP1_PORTION = 0.5
+TP2_PORTION = 0.5
 
 # =====================================================
 # SESSION STATE
@@ -78,16 +83,18 @@ def send_telegram(msg):
     except:
         pass
 
-def format_alert(symbol, candle, entry, sl, tp, risk, vo):
+def format_alert(symbol, candle, entry, sl, tp1, tp2, risk, vo):
     return f"""
-🚀 *FIXED-R SIGNAL — OPSI B*
+🚀 *FIXED-R SIGNAL — OPSI A PRO*
 
 *Symbol:* `{symbol}`
 *Candle:* {candle}
 
 *Entry:* `{fmt_price(entry)}`
 *SL:* `{fmt_price(sl)}`
-*TP (2R):* `{fmt_price(tp)}`
+
+*TP1 (1R, 50%):* `{fmt_price(tp1)}`
+*TP2 (1.5R, 50%):* `{fmt_price(tp2)}`
 
 *Risk:* {risk}%
 *VO:* {vo}
@@ -156,12 +163,12 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# ENTRY + TRADE (OPSI B)
+# ENTRY + TRADE (OPSI A PRO)
 # =====================================================
 def valid_entry(df, stl, trend, vo):
     return trend.iloc[-1] == 1 and trend.iloc[-2] == -1 and vo.iloc[-1] >= 5
 
-def build_trade_fixed_r(df4h, df1d):
+def build_trade_opsi_a(df4h, df1d):
     entry = df4h.close.iloc[-1]
     supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
     if not supports:
@@ -172,11 +179,12 @@ def build_trade_fixed_r(df4h, df1d):
     if risk <= 0:
         return None
 
-    tp = entry + risk * TP_MULTIPLIER
-    return entry, sl, tp
+    tp1 = entry + risk * TP1_R
+    tp2 = entry + risk * TP2_R
+    return entry, sl, tp1, tp2
 
 # =====================================================
-# BACKTEST (OPSI B)
+# BACKTEST — OPSI A PRO
 # =====================================================
 def backtest_symbol(okx, symbol):
     df = pd.DataFrame(
@@ -203,19 +211,22 @@ def backtest_symbol(okx, symbol):
         if candle not in VALID_CANDLES:
             continue
 
-        trade = build_trade_fixed_r(slice_df, df1d)
+        trade = build_trade_opsi_a(slice_df, df1d)
         if not trade:
             continue
 
-        entry, sl, tp = trade
+        entry, sl, tp1, tp2 = trade
+        hit_tp1 = False
         rr = None
 
         for j in range(i+2, min(i+MAX_FORWARD, len(df))):
-            if df.high.iloc[j] >= tp:
-                rr = 2
+            if not hit_tp1 and df.high.iloc[j] >= tp1:
+                hit_tp1 = True
+            if hit_tp1 and df.high.iloc[j] >= tp2:
+                rr = TP1_PORTION * TP1_R + TP2_PORTION * TP2_R
                 break
             if df.low.iloc[j] <= sl:
-                rr = -1
+                rr = 0 if hit_tp1 else -1
                 break
 
         if rr is not None:
@@ -237,7 +248,7 @@ def plot_equity_curve(bt):
     ))
 
     fig.update_layout(
-        title="📈 Equity Curve — OPSI B (TP 2R)",
+        title="📈 Equity Curve — OPSI A PRO",
         xaxis_title="Trade #",
         yaxis_title="Cumulative R",
         template="plotly_dark",
@@ -248,9 +259,9 @@ def plot_equity_curve(bt):
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OKX Fixed-R OPSI B", layout="wide")
-st.title("🚀 OKX Spot Screener & Backtest — OPSI B (TP 2R)")
-st.warning("⚠️ MODE AGRESIF — TP 2R | Expect lose streak")
+st.set_page_config("OKX Fixed-R OPSI A PRO", layout="wide")
+st.title("🚀 OKX Spot Screener & Backtest — OPSI A PRO")
+st.success("🎯 Balanced system | Partial TP | Production-ready")
 
 tab1, tab2 = st.tabs(["🔍 Screener", "🧪 Backtest"])
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
@@ -290,11 +301,11 @@ with tab1:
                         columns=["t","open","high","low","close","volume"]
                     )
 
-                    trade = build_trade_fixed_r(df4h, df1d)
+                    trade = build_trade_opsi_a(df4h, df1d)
                     if not trade:
                         continue
 
-                    entry, sl, tp = trade
+                    entry, sl, tp1, tp2 = trade
                     risk = round((entry - sl) / entry * 100, 2)
                     vo_val = round(vo.iloc[-1], 2)
 
@@ -303,14 +314,15 @@ with tab1:
                         "Candle": candle,
                         "Entry": fmt_price(entry),
                         "SL": fmt_price(sl),
-                        "TP (2R)": fmt_price(tp),
+                        "TP1 (1R)": fmt_price(tp1),
+                        "TP2 (1.5R)": fmt_price(tp2),
                         "Risk %": risk,
                         "VO %": vo_val
                     })
 
                     if s not in st.session_state.alerted:
                         send_telegram(format_alert(
-                            s, candle, entry, sl, tp, risk, vo_val
+                            s, candle, entry, sl, tp1, tp2, risk, vo_val
                         ))
                         st.session_state.alerted.add(s)
 
