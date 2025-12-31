@@ -6,7 +6,7 @@ import time
 import plotly.graph_objects as go
 
 # =====================================================
-# CONFIG
+# CONFIG — OPSI B (TP 2R)
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -14,7 +14,7 @@ SR_TF = "1d"
 LIMIT_4H = 200
 LIMIT_1D = 200
 BACKTEST_LIMIT = 600
-MAX_FORWARD = 50
+MAX_FORWARD = 80           # ⏳ beri waktu capai 2R
 
 ATR_PERIOD = 10
 MULTIPLIER = 3.0
@@ -30,15 +30,12 @@ RATE_LIMIT_DELAY = 0.15
 
 VALID_CANDLES = {"Bullish Engulfing", "Hammer", "Strong Bullish"}
 
-MAX_SIGNAL_PER_RUN = 2  # 🔐 anti overtrade
+TP_MULTIPLIER = 2.0        # 🔥 OPSI B
+MAX_SIGNAL_PER_RUN = 2     # 🔐 anti overtrade
 
 # =====================================================
 # SESSION STATE
 # =====================================================
-if "scanned" not in st.session_state:
-    st.session_state.scanned = False
-if "results" not in st.session_state:
-    st.session_state.results = None
 if "alerted" not in st.session_state:
     st.session_state.alerted = set()
 
@@ -83,14 +80,14 @@ def send_telegram(msg):
 
 def format_alert(symbol, candle, entry, sl, tp, risk, vo):
     return f"""
-🚀 *FIXED-R SIGNAL*
+🚀 *FIXED-R SIGNAL — OPSI B*
 
 *Symbol:* `{symbol}`
 *Candle:* {candle}
 
 *Entry:* `{fmt_price(entry)}`
 *SL:* `{fmt_price(sl)}`
-*TP (1R):* `{fmt_price(tp)}`
+*TP (2R):* `{fmt_price(tp)}`
 
 *Risk:* {risk}%
 *VO:* {vo}
@@ -159,7 +156,7 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# ENTRY + TRADE
+# ENTRY + TRADE (OPSI B)
 # =====================================================
 def valid_entry(df, stl, trend, vo):
     return trend.iloc[-1] == 1 and trend.iloc[-2] == -1 and vo.iloc[-1] >= 5
@@ -175,88 +172,183 @@ def build_trade_fixed_r(df4h, df1d):
     if risk <= 0:
         return None
 
-    tp = entry + risk
+    tp = entry + risk * TP_MULTIPLIER
     return entry, sl, tp
+
+# =====================================================
+# BACKTEST (OPSI B)
+# =====================================================
+def backtest_symbol(okx, symbol):
+    df = pd.DataFrame(
+        okx.fetch_ohlcv(symbol, ENTRY_TF, limit=BACKTEST_LIMIT),
+        columns=["t","open","high","low","close","volume"]
+    )
+
+    df1d = pd.DataFrame(
+        okx.fetch_ohlcv(symbol, SR_TF, limit=LIMIT_1D),
+        columns=["t","open","high","low","close","volume"]
+    )
+
+    trades = []
+
+    for i in range(120, len(df) - MAX_FORWARD):
+        slice_df = df.iloc[:i+1]
+        stl, trend = supertrend(slice_df, ATR_PERIOD, MULTIPLIER)
+        vo = volume_oscillator(slice_df.volume, VO_FAST, VO_SLOW)
+
+        if not valid_entry(slice_df, stl, trend, vo):
+            continue
+
+        candle = detect_candle(slice_df)
+        if candle not in VALID_CANDLES:
+            continue
+
+        trade = build_trade_fixed_r(slice_df, df1d)
+        if not trade:
+            continue
+
+        entry, sl, tp = trade
+        rr = None
+
+        for j in range(i+2, min(i+MAX_FORWARD, len(df))):
+            if df.high.iloc[j] >= tp:
+                rr = 2
+                break
+            if df.low.iloc[j] <= sl:
+                rr = -1
+                break
+
+        if rr is not None:
+            trades.append({"RR": rr, "Win": rr > 0})
+
+    return pd.DataFrame(trades)
+
+# =====================================================
+# EQUITY CURVE
+# =====================================================
+def plot_equity_curve(bt):
+    bt = bt.copy()
+    bt["Trade #"] = range(1, len(bt) + 1)
+    bt["Equity (R)"] = bt["RR"].cumsum()
+
+    fig = go.Figure(go.Scatter(
+        x=bt["Trade #"], y=bt["Equity (R)"],
+        mode="lines+markers", line=dict(width=3)
+    ))
+
+    fig.update_layout(
+        title="📈 Equity Curve — OPSI B (TP 2R)",
+        xaxis_title="Trade #",
+        yaxis_title="Cumulative R",
+        template="plotly_dark",
+        height=500
+    )
+    return fig
 
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OKX Fixed-R System", layout="wide")
-st.title("🚀 OKX Spot Screener — Fixed-R System")
-st.success("⏰ Run screener di 23:00 WIB (utama) / 19:00 WIB (opsional)")
+st.set_page_config("OKX Fixed-R OPSI B", layout="wide")
+st.title("🚀 OKX Spot Screener & Backtest — OPSI B (TP 2R)")
+st.warning("⚠️ MODE AGRESIF — TP 2R | Expect lose streak")
 
+tab1, tab2 = st.tabs(["🔍 Screener", "🧪 Backtest"])
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
 
 # =====================================================
 # SCREENER
 # =====================================================
-if st.button("🔍 Run Screener"):
-    symbols = get_liquid_symbols(MIN_USDT_VOLUME)
-    results = []
-    st.session_state.alerted.clear()
+with tab1:
+    if st.button("🔍 Run Screener"):
+        symbols = get_liquid_symbols(MIN_USDT_VOLUME)
+        results = []
+        st.session_state.alerted.clear()
+        signal_count = 0
 
-    signal_count = 0
+        with st.spinner("Scanning market..."):
+            for s in symbols:
+                if signal_count >= MAX_SIGNAL_PER_RUN:
+                    break
+                try:
+                    df4h = pd.DataFrame(
+                        okx.fetch_ohlcv(s, ENTRY_TF, limit=LIMIT_4H),
+                        columns=["t","open","high","low","close","volume"]
+                    )
 
-    with st.spinner("Scanning market..."):
-        for s in symbols:
-            if signal_count >= MAX_SIGNAL_PER_RUN:
-                break
+                    stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
+                    vo = volume_oscillator(df4h.volume, VO_FAST, VO_SLOW)
 
-            try:
-                df4h = pd.DataFrame(
-                    okx.fetch_ohlcv(s, ENTRY_TF, limit=LIMIT_4H),
-                    columns=["t","open","high","low","close","volume"]
-                )
+                    if not valid_entry(df4h, stl, trend, vo):
+                        continue
 
-                stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
-                vo = volume_oscillator(df4h.volume, VO_FAST, VO_SLOW)
+                    candle = detect_candle(df4h)
+                    if candle not in VALID_CANDLES:
+                        continue
 
-                if not valid_entry(df4h, stl, trend, vo):
-                    continue
+                    df1d = pd.DataFrame(
+                        okx.fetch_ohlcv(s, SR_TF, limit=LIMIT_1D),
+                        columns=["t","open","high","low","close","volume"]
+                    )
 
-                candle = detect_candle(df4h)
-                if candle not in VALID_CANDLES:
-                    continue
+                    trade = build_trade_fixed_r(df4h, df1d)
+                    if not trade:
+                        continue
 
-                df1d = pd.DataFrame(
-                    okx.fetch_ohlcv(s, SR_TF, limit=LIMIT_1D),
-                    columns=["t","open","high","low","close","volume"]
-                )
+                    entry, sl, tp = trade
+                    risk = round((entry - sl) / entry * 100, 2)
+                    vo_val = round(vo.iloc[-1], 2)
 
-                trade = build_trade_fixed_r(df4h, df1d)
-                if not trade:
-                    continue
+                    results.append({
+                        "Symbol": s,
+                        "Candle": candle,
+                        "Entry": fmt_price(entry),
+                        "SL": fmt_price(sl),
+                        "TP (2R)": fmt_price(tp),
+                        "Risk %": risk,
+                        "VO %": vo_val
+                    })
 
-                entry, sl, tp = trade
-                risk = round((entry - sl) / entry * 100, 2)
-                vo_val = round(vo.iloc[-1], 2)
+                    if s not in st.session_state.alerted:
+                        send_telegram(format_alert(
+                            s, candle, entry, sl, tp, risk, vo_val
+                        ))
+                        st.session_state.alerted.add(s)
 
-                results.append({
-                    "Symbol": s,
-                    "Candle": candle,
-                    "Entry": fmt_price(entry),
-                    "SL": fmt_price(sl),
-                    "TP (1R)": fmt_price(tp),
-                    "Risk %": risk,
-                    "VO %": vo_val
-                })
+                    signal_count += 1
 
-                if s not in st.session_state.alerted:
-                    send_telegram(format_alert(
-                        s, candle, entry, sl, tp, risk, vo_val
-                    ))
-                    st.session_state.alerted.add(s)
+                except:
+                    pass
 
-                signal_count += 1
+                time.sleep(RATE_LIMIT_DELAY)
 
-            except:
-                pass
+        if results:
+            st.success(f"✅ Found {len(results)} setups")
+            st.dataframe(pd.DataFrame(results), use_container_width=True)
+        else:
+            st.warning("❌ No valid setup found")
 
-            time.sleep(RATE_LIMIT_DELAY)
+# =====================================================
+# BACKTEST
+# =====================================================
+with tab2:
+    if st.button("🧪 Run Backtest"):
+        symbols = get_liquid_symbols(MIN_USDT_VOLUME)
+        all_bt = []
 
-    if results:
-        st.session_state.results = pd.DataFrame(results)
-        st.success(f"✅ Found {len(results)} valid setups")
-        st.dataframe(st.session_state.results, use_container_width=True)
-    else:
-        st.warning("❌ No valid setup found")
+        with st.spinner("Running backtest..."):
+            for s in symbols:
+                try:
+                    bt = backtest_symbol(okx, s)
+                    if not bt.empty:
+                        all_bt.append(bt)
+                except:
+                    pass
+
+        if all_bt:
+            bt = pd.concat(all_bt, ignore_index=True)
+            st.metric("Total Trades", len(bt))
+            st.metric("Winrate %", round(bt["Win"].mean()*100, 2))
+            st.metric("Avg RR", round(bt["RR"].mean(), 2))
+            st.plotly_chart(plot_equity_curve(bt), use_container_width=True)
+        else:
+            st.warning("No trades found")
