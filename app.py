@@ -27,7 +27,12 @@ ZONE_BUFFER = 0.008
 
 MIN_USDT_VOLUME = 2_000_000
 
-VALID_CANDLES = {"Bullish Engulfing", "Hammer", "Strong Bullish"}
+VALID_CANDLES = {
+    "Bullish Engulfing",
+    "Hammer",
+    "Strong Bullish",
+    "Normal"
+}
 
 # === TP STRUCTURE (BELUM DIUBAH)
 TP1_R = 1.0
@@ -257,4 +262,5 @@ if st.button("🧪 Run Backtest"):
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("No trades found")
+
 
