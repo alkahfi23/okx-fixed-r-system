@@ -6,7 +6,7 @@ import time
 import plotly.graph_objects as go
 
 # =====================================================
-# CONFIG — OPSI A PRO v3 (TUNED)
+# CONFIG — OPSI A PRO v3 (STEP 3)
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -30,12 +30,12 @@ RATE_LIMIT_DELAY = 0.15
 
 VALID_CANDLES = {"Bullish Engulfing", "Hammer", "Strong Bullish"}
 
-# === TUNING STEP 2 ===
+# === TP STRUCTURE (BELUM DIUBAH)
 TP1_R = 1.0
 TP2_R = 1.5
 TP1_PORTION = 0.5
 TP2_PORTION = 0.5
-SOFT_BE_R = 0.0   # ❗ SOFT BE OFF (EDGE TEST)
+SOFT_BE_R = 0.0   # STEP 2 — SOFT BE OFF
 
 # =====================================================
 # HELPERS
@@ -104,7 +104,6 @@ def volume_oscillator(v, f, s):
 def detect_candle(df):
     o, h, l, c = df.open, df.high, df.low, df.close
     po, pc = o.shift(1), c.shift(1)
-
     body = abs(c - o)
     rng = h - l
 
@@ -130,15 +129,21 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# ENTRY VALIDATION (STEP 1 — RELAX ENTRY)
+# ENTRY VALIDATION (STEP 1)
 # =====================================================
 def valid_entry(df, stl, trend, vo):
     return trend.iloc[-1] == 1 and vo.iloc[-1] >= 5
 
 # =====================================================
-# TRADE BUILDER
+# TRADE BUILDER — STEP 3 (DAILY EMA200 FILTER)
 # =====================================================
 def build_trade_opsi_a_v3(df4h, df1d):
+
+    # === STEP 3 FILTER ===
+    ema200 = df1d.close.ewm(span=200, adjust=False).mean()
+    if df1d.close.iloc[-1] < ema200.iloc[-1]:
+        return None
+
     entry = df4h.close.iloc[-1]
     supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
     if not supports:
@@ -163,7 +168,6 @@ def backtest_symbol(okx, symbol):
         okx.fetch_ohlcv(symbol, ENTRY_TF, limit=BACKTEST_LIMIT),
         columns=["t","open","high","low","close","volume"]
     )
-
     df1d = pd.DataFrame(
         okx.fetch_ohlcv(symbol, SR_TF, limit=LIMIT_1D),
         columns=["t","open","high","low","close","volume"]
@@ -195,13 +199,9 @@ def backtest_symbol(okx, symbol):
                 hit_tp1 = True
                 continue
 
-            if hit_tp1:
-                if df.high.iloc[j] >= tp2:
-                    rr = TP1_PORTION * TP1_R + TP2_PORTION * TP2_R
-                    break
-                if SOFT_BE_R != 0 and df.low.iloc[j] <= soft_be:
-                    rr = TP1_PORTION * TP1_R
-                    break
+            if hit_tp1 and df.high.iloc[j] >= tp2:
+                rr = TP1_PORTION * TP1_R + TP2_PORTION * TP2_R
+                break
 
             if not hit_tp1 and df.low.iloc[j] <= sl:
                 rr = -1
@@ -222,51 +222,46 @@ def build_equity_curve(rr):
     return equity, drawdown
 
 # =====================================================
-# UI
+# UI — BACKTEST ONLY (FOCUS TEST)
 # =====================================================
-st.set_page_config("OKX OPSI A PRO v3 — Tuned", layout="wide")
-st.title("🚀 OPSI A PRO v3 — TUNED (STEP 1 + 2)")
+st.set_page_config("OPSI A PRO v3 — STEP 3", layout="wide")
+st.title("🚀 OPSI A PRO v3 — STEP 3 (Daily EMA200 Filter)")
 
-tab1, tab2 = st.tabs(["🔍 Screener", "🧪 Backtest"])
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
 
-# =====================================================
-# BACKTEST + EQUITY CURVE
-# =====================================================
-with tab2:
-    if st.button("🧪 Run Backtest"):
-        symbols = get_liquid_symbols(MIN_USDT_VOLUME)
-        all_bt = []
+if st.button("🧪 Run Backtest"):
+    symbols = get_liquid_symbols(MIN_USDT_VOLUME)
+    all_bt = []
 
-        with st.spinner("Running backtest..."):
-            for s in symbols:
-                try:
-                    bt = backtest_symbol(okx, s)
-                    if not bt.empty:
-                        all_bt.append(bt)
-                except:
-                    pass
+    with st.spinner("Running backtest..."):
+        for s in symbols:
+            try:
+                bt = backtest_symbol(okx, s)
+                if not bt.empty:
+                    all_bt.append(bt)
+            except:
+                pass
 
-        if all_bt:
-            bt = pd.concat(all_bt, ignore_index=True)
-            equity, dd = build_equity_curve(bt["RR"])
+    if all_bt:
+        bt = pd.concat(all_bt, ignore_index=True)
+        equity, dd = build_equity_curve(bt["RR"])
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Trades", len(bt))
-            c2.metric("Winrate %", round(bt["Win"].mean() * 100, 2))
-            c3.metric("Avg RR", round(bt["RR"].mean(), 2))
-            c4.metric("Max DD (R)", round(dd.min(), 2))
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Trades", len(bt))
+        c2.metric("Winrate %", round(bt["Win"].mean() * 100, 2))
+        c3.metric("Avg RR", round(bt["RR"].mean(), 2))
+        c4.metric("Max DD (R)", round(dd.min(), 2))
 
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(y=equity, name="Equity", mode="lines"))
-            fig.add_trace(go.Scatter(y=dd, name="Drawdown", mode="lines", line=dict(dash="dot")))
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(y=equity, name="Equity", mode="lines"))
+        fig.add_trace(go.Scatter(y=dd, name="Drawdown", mode="lines", line=dict(dash="dot")))
 
-            fig.update_layout(
-                title="📈 Equity Curve & Drawdown (R-based)",
-                template="plotly_dark",
-                height=520
-            )
+        fig.update_layout(
+            title="📈 Equity Curve & Drawdown (R-based)",
+            template="plotly_dark",
+            height=520
+        )
 
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("No trades found")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("No trades found")
