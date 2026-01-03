@@ -5,7 +5,7 @@ import requests
 import plotly.graph_objects as go
 
 # =====================================================
-# CONFIG — OPSI A PRO v3 (STEP 5B)
+# CONFIG — OPSI A PRO v3 (STEP 6A)
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -33,11 +33,13 @@ VALID_CANDLES = {
     "Normal"
 }
 
-# === TP STRUCTURE (TETAP)
-TP1_R = 1.0
-TP2_R = 1.5
-TP1_PORTION = 0.5
-TP2_PORTION = 0.5
+# =====================================================
+# 🔥 STEP 6A — TP OPTIMIZATION (ONLY CHANGE)
+# =====================================================
+TP1_R = 0.8
+TP2_R = 2.0
+TP1_PORTION = 0.3
+TP2_PORTION = 0.7
 SOFT_BE_R = 0.0
 
 # =====================================================
@@ -124,20 +126,10 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# ENTRY VALIDATION — STEP 5B
+# ENTRY VALIDATION (STEP 4B BASELINE)
 # =====================================================
 def valid_entry(df, stl, trend, vo):
-    if trend.iloc[-1] != 1 or vo.iloc[-1] < 0:
-        return False
-
-    # 🔥 STEP 5B — TREND STRENGTH FILTER (4H)
-    ema50 = df.close.ewm(span=50, adjust=False).mean()
-    ema200 = df.close.ewm(span=200, adjust=False).mean()
-
-    if ema50.iloc[-1] < ema200.iloc[-1]:
-        return False
-
-    return True
+    return trend.iloc[-1] == 1 and vo.iloc[-1] >= 0
 
 # =====================================================
 # TRADE BUILDER — DAILY EMA200 FILTER (CORE EDGE)
@@ -227,8 +219,8 @@ def build_equity_curve(rr):
 # =====================================================
 # UI — BACKTEST ONLY
 # =====================================================
-st.set_page_config("OPSI A PRO v3 — STEP 5B", layout="wide")
-st.title("🚀 OPSI A PRO v3 — STEP 5B (Trend Strength Filter)")
+st.set_page_config("OPSI A PRO v3 — STEP 6A", layout="wide")
+st.title("🚀 OPSI A PRO v3 — STEP 6A (TP Optimization)")
 
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
 
