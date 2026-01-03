@@ -37,6 +37,23 @@ TP2_PORTION = 0.5
 SOFT_BE_R = 0.0   # SOFT BE OFF
 
 # =====================================================
+# MARKET SYMBOL FETCHER
+# =====================================================
+@st.cache_data(ttl=300)
+def get_liquid_symbols(min_vol):
+    url = "https://www.okx.com/api/v5/market/tickers"
+    r = requests.get(url, params={"instType": "SPOT"}, timeout=15)
+    r.raise_for_status()
+
+    return [
+        d["instId"]
+        for d in r.json()["data"]
+        if d["instId"].endswith("-USDT")
+        and float(d["volCcy24h"]) >= min_vol
+    ]
+
+
+# =====================================================
 # INDICATORS
 # =====================================================
 def supertrend(df, period, mult):
@@ -240,3 +257,4 @@ if st.button("🧪 Run Backtest"):
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("No trades found")
+
