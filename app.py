@@ -5,7 +5,7 @@ import requests
 import plotly.graph_objects as go
 
 # =====================================================
-# CONFIG — OPSI A PRO v3 (STEP 5A)
+# CONFIG — OPSI A PRO v3 (STEP 5B)
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -15,9 +15,7 @@ LIMIT_1D = 200
 BACKTEST_LIMIT = 600
 MAX_FORWARD = 80
 
-ATR_PERIOD = 14
-ATR_RISK_MAX = 2.0     # 🔥 STEP 5A KEY PARAMETER
-
+ATR_PERIOD = 10
 MULTIPLIER = 3.0
 
 VO_FAST = 14
@@ -32,10 +30,10 @@ VALID_CANDLES = {
     "Bullish Engulfing",
     "Hammer",
     "Strong Bullish",
-    "Normal"   # dari STEP 4B
+    "Normal"
 }
 
-# === TP STRUCTURE (BELUM DIUBAH)
+# === TP STRUCTURE (TETAP)
 TP1_R = 1.0
 TP2_R = 1.5
 TP1_PORTION = 0.5
@@ -68,7 +66,7 @@ def supertrend(df, period, mult):
         (l - c.shift()).abs()
     ], axis=1).max(axis=1)
 
-    atr = tr.rolling(period).mean()
+    atr = tr.ewm(span=period, adjust=False).mean()
     hl2 = (h + l) / 2
 
     upper = hl2 + mult * atr
@@ -94,15 +92,6 @@ def volume_oscillator(v, f, s):
     ef = v.ewm(span=f, adjust=False).mean()
     es = v.ewm(span=s, adjust=False).mean()
     return (ef - es) / es * 100
-
-def atr_14(df):
-    h, l, c = df.high, df.low, df.close
-    tr = pd.concat([
-        (h - l),
-        (h - c.shift()).abs(),
-        (l - c.shift()).abs()
-    ], axis=1).max(axis=1)
-    return tr.rolling(ATR_PERIOD).mean()
 
 # =====================================================
 # PRICE ACTION
@@ -135,19 +124,28 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# ENTRY VALIDATION
+# ENTRY VALIDATION — STEP 5B
 # =====================================================
 def valid_entry(df, stl, trend, vo):
-    return trend.iloc[-1] == 1 and vo.iloc[-1] >= 0
+    if trend.iloc[-1] != 1 or vo.iloc[-1] < 0:
+        return False
+
+    # 🔥 STEP 5B — TREND STRENGTH FILTER (4H)
+    ema50 = df.close.ewm(span=50, adjust=False).mean()
+    ema200 = df.close.ewm(span=200, adjust=False).mean()
+
+    if ema50.iloc[-1] < ema200.iloc[-1]:
+        return False
+
+    return True
 
 # =====================================================
-# TRADE BUILDER — STEP 5A ATR FILTER
+# TRADE BUILDER — DAILY EMA200 FILTER (CORE EDGE)
 # =====================================================
 def build_trade_opsi_a_v3(df4h, df1d):
 
-    # Daily trend filter (EDGE CORE)
-    ema200 = df1d.close.ewm(span=200, adjust=False).mean()
-    if df1d.close.iloc[-1] < ema200.iloc[-1]:
+    ema200_d = df1d.close.ewm(span=200, adjust=False).mean()
+    if df1d.close.iloc[-1] < ema200_d.iloc[-1]:
         return None
 
     entry = df4h.close.iloc[-1]
@@ -158,11 +156,6 @@ def build_trade_opsi_a_v3(df4h, df1d):
     sl = max(supports) * (1 - ZONE_BUFFER)
     risk = entry - sl
     if risk <= 0:
-        return None
-
-    # 🔥 STEP 5A — ATR RISK FILTER
-    atr = atr_14(df4h).iloc[-1]
-    if atr is None or risk / atr > ATR_RISK_MAX:
         return None
 
     tp1 = entry + risk * TP1_R
@@ -234,8 +227,8 @@ def build_equity_curve(rr):
 # =====================================================
 # UI — BACKTEST ONLY
 # =====================================================
-st.set_page_config("OPSI A PRO v3 — STEP 5A", layout="wide")
-st.title("🚀 OPSI A PRO v3 — STEP 5A (ATR Risk Filter)")
+st.set_page_config("OPSI A PRO v3 — STEP 5B", layout="wide")
+st.title("🚀 OPSI A PRO v3 — STEP 5B (Trend Strength Filter)")
 
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
 
