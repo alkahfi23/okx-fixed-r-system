@@ -65,7 +65,6 @@ def get_liquid_symbols(min_vol):
 # =====================================================
 def supertrend(df, period, mult):
     h, l, c = df.high, df.low, df.close
-
     tr = pd.concat([
         (h - l),
         (h - c.shift()).abs(),
@@ -109,17 +108,10 @@ def detect_candle(df):
     body = abs(c - o)
     rng = h - l
 
-    if (
-        c.iloc[-1] > o.iloc[-1]
-        and pc.iloc[-1] < po.iloc[-1]
-        and c.iloc[-1] > po.iloc[-1]
-    ):
+    if c.iloc[-1] > o.iloc[-1] and pc.iloc[-1] < po.iloc[-1] and c.iloc[-1] > po.iloc[-1]:
         return "Bullish Engulfing"
 
-    if (
-        c.iloc[-1] > o.iloc[-1]
-        and (o.iloc[-1] - l.iloc[-1]) > 2 * body.iloc[-1]
-    ):
+    if c.iloc[-1] > o.iloc[-1] and (o.iloc[-1] - l.iloc[-1]) > 2 * body.iloc[-1]:
         return "Hammer"
 
     if rng.iloc[-1] > 0 and body.iloc[-1] / rng.iloc[-1] > 0.65 and c.iloc[-1] > o.iloc[-1]:
@@ -144,12 +136,11 @@ def valid_entry(df, stl, trend, vo):
     return trend.iloc[-1] == 1 and trend.iloc[-2] == -1 and vo.iloc[-1] >= 5
 
 # =====================================================
-# TRADE BUILDER — OPSI A PRO v3
+# TRADE BUILDER
 # =====================================================
 def build_trade_opsi_a_v3(df4h, df1d):
     entry = df4h.close.iloc[-1]
     supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
-
     if not supports:
         return None
 
@@ -172,7 +163,6 @@ def backtest_symbol(okx, symbol):
         okx.fetch_ohlcv(symbol, ENTRY_TF, limit=BACKTEST_LIMIT),
         columns=["t", "open", "high", "low", "close", "volume"]
     )
-
     df1d = pd.DataFrame(
         okx.fetch_ohlcv(symbol, SR_TF, limit=LIMIT_1D),
         columns=["t", "open", "high", "low", "close", "volume"]
@@ -188,8 +178,7 @@ def backtest_symbol(okx, symbol):
         if not valid_entry(slice_df, stl, trend, vo):
             continue
 
-        candle = detect_candle(slice_df)
-        if candle not in VALID_CANDLES:
+        if detect_candle(slice_df) not in VALID_CANDLES:
             continue
 
         trade = build_trade_opsi_a_v3(slice_df, df1d)
@@ -225,8 +214,8 @@ def backtest_symbol(okx, symbol):
 # =====================================================
 # EQUITY CURVE
 # =====================================================
-def build_equity_curve(rr_series):
-    equity = rr_series.cumsum()
+def build_equity_curve(rr):
+    equity = rr.cumsum()
     peak = equity.cummax()
     drawdown = equity - peak
     return equity, drawdown
@@ -241,63 +230,82 @@ tab1, tab2 = st.tabs(["🔍 Screener", "🧪 Backtest"])
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
 
 # =====================================================
-# SCREENER
+# SCREENER (INFORMATIVE)
 # =====================================================
 with tab1:
     if st.button("🔍 Run Screener"):
         symbols = get_liquid_symbols(MIN_USDT_VOLUME)
         results = []
 
-        with st.spinner("Scanning market..."):
-            for s in symbols:
-                try:
-                    df4h = pd.DataFrame(
-                        okx.fetch_ohlcv(s, ENTRY_TF, limit=LIMIT_4H),
-                        columns=["t", "open", "high", "low", "close", "volume"]
-                    )
+        progress = st.progress(0)
+        status = st.empty()
+        counter = st.empty()
 
-                    stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
-                    vo = volume_oscillator(df4h.volume, VO_FAST, VO_SLOW)
+        total = len(symbols)
 
-                    if not valid_entry(df4h, stl, trend, vo):
-                        continue
+        for i, s in enumerate(symbols, start=1):
+            status.info(f"🔍 Scanning **{s}** ({i}/{total})")
+            counter.write(f"✅ Valid setups found: **{len(results)}**")
 
-                    candle = detect_candle(df4h)
-                    if candle not in VALID_CANDLES:
-                        continue
+            try:
+                df4h = pd.DataFrame(
+                    okx.fetch_ohlcv(s, ENTRY_TF, limit=LIMIT_4H),
+                    columns=["t", "open", "high", "low", "close", "volume"]
+                )
 
-                    df1d = pd.DataFrame(
-                        okx.fetch_ohlcv(s, SR_TF, limit=LIMIT_1D),
-                        columns=["t", "open", "high", "low", "close", "volume"]
-                    )
+                stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
+                vo = volume_oscillator(df4h.volume, VO_FAST, VO_SLOW)
 
-                    trade = build_trade_opsi_a_v3(df4h, df1d)
-                    if not trade:
-                        continue
+                if not valid_entry(df4h, stl, trend, vo):
+                    progress.progress(i / total)
+                    time.sleep(RATE_LIMIT_DELAY)
+                    continue
 
-                    entry, sl, tp1, tp2, _ = trade
-                    risk = round((entry - sl) / entry * 100, 2)
+                candle = detect_candle(df4h)
+                if candle not in VALID_CANDLES:
+                    progress.progress(i / total)
+                    time.sleep(RATE_LIMIT_DELAY)
+                    continue
 
-                    results.append({
-                        "Symbol": s,
-                        "Candle": candle,
-                        "Entry": fmt_price(entry),
-                        "SL": fmt_price(sl),
-                        "TP1": fmt_price(tp1),
-                        "TP2": fmt_price(tp2),
-                        "Risk %": risk
-                    })
+                df1d = pd.DataFrame(
+                    okx.fetch_ohlcv(s, SR_TF, limit=LIMIT_1D),
+                    columns=["t", "open", "high", "low", "close", "volume"]
+                )
 
-                except:
-                    pass
+                trade = build_trade_opsi_a_v3(df4h, df1d)
+                if not trade:
+                    progress.progress(i / total)
+                    time.sleep(RATE_LIMIT_DELAY)
+                    continue
 
-                time.sleep(RATE_LIMIT_DELAY)
+                entry, sl, tp1, tp2, _ = trade
+                risk = round((entry - sl) / entry * 100, 2)
+
+                results.append({
+                    "Symbol": s,
+                    "Candle": candle,
+                    "Entry": fmt_price(entry),
+                    "SL": fmt_price(sl),
+                    "TP1": fmt_price(tp1),
+                    "TP2": fmt_price(tp2),
+                    "Risk %": risk
+                })
+
+            except:
+                pass
+
+            progress.progress(i / total)
+            time.sleep(RATE_LIMIT_DELAY)
+
+        status.empty()
+        counter.empty()
+        progress.empty()
 
         if results:
-            st.success(f"Found {len(results)} setups")
+            st.success(f"🎯 Scan selesai — ditemukan {len(results)} setup")
             st.dataframe(pd.DataFrame(results), use_container_width=True)
         else:
-            st.warning("No valid setup found")
+            st.warning("❌ Scan selesai — tidak ada setup")
 
 # =====================================================
 # BACKTEST + EQUITY CURVE
@@ -318,30 +326,17 @@ with tab2:
 
         if all_bt:
             bt = pd.concat(all_bt, ignore_index=True)
+            equity, dd = build_equity_curve(bt["RR"])
 
-            equity, drawdown = build_equity_curve(bt["RR"])
-
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total Trades", len(bt))
-            col2.metric("Winrate %", round(bt["Win"].mean() * 100, 2))
-            col3.metric("Avg RR", round(bt["RR"].mean(), 2))
-            col4.metric("Max DD (R)", round(drawdown.min(), 2))
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Trades", len(bt))
+            c2.metric("Winrate %", round(bt["Win"].mean() * 100, 2))
+            c3.metric("Avg RR", round(bt["RR"].mean(), 2))
+            c4.metric("Max DD (R)", round(dd.min(), 2))
 
             fig = go.Figure()
-
-            fig.add_trace(go.Scatter(
-                y=equity,
-                mode="lines",
-                name="Equity Curve",
-                line=dict(width=2)
-            ))
-
-            fig.add_trace(go.Scatter(
-                y=drawdown,
-                mode="lines",
-                name="Drawdown",
-                line=dict(dash="dot")
-            ))
+            fig.add_trace(go.Scatter(y=equity, name="Equity", mode="lines"))
+            fig.add_trace(go.Scatter(y=dd, name="Drawdown", mode="lines", line=dict(dash="dot")))
 
             fig.update_layout(
                 title="📈 Equity Curve & Drawdown (R-based)",
@@ -352,6 +347,5 @@ with tab2:
             )
 
             st.plotly_chart(fig, use_container_width=True)
-
         else:
             st.warning("No trades found")
