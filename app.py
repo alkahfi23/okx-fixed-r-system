@@ -249,8 +249,8 @@ def backtest_symbol(okx, symbol):
 st.set_page_config("OKX Fixed-R System (BTC Filter)", layout="wide")
 st.title("🚀 OKX Spot Screener & Backtest — OPSI A PRO v3 + BTC Filter")
 
-btc_bull = btc_trend_is_bullish()
-st.info(f"BTC Trend: {'🟢 BULLISH' if btc_bull else '🔴 NOT BULLISH'}")
+#btc_bull = btc_trend_is_bullish()
+#st.info(f"BTC Trend: {'🟢 BULLISH' if btc_bull else '🔴 NOT BULLISH'}")
 
 tab1, tab2 = st.tabs(["🔍 Screener", "🧪 Backtest"])
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
@@ -340,4 +340,5 @@ with tab2:
             st.metric("Avg RR", round(bt["RR"].mean(), 2))
         else:
             st.warning("No trades found")
+
 
