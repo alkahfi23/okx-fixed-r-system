@@ -2,11 +2,10 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import requests
-import time
 import plotly.graph_objects as go
 
 # =====================================================
-# CONFIG — OPSI A PRO v3 (STEP 4A)
+# CONFIG — OPSI A PRO v3 (STEP 5A)
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -16,7 +15,9 @@ LIMIT_1D = 200
 BACKTEST_LIMIT = 600
 MAX_FORWARD = 80
 
-ATR_PERIOD = 10
+ATR_PERIOD = 14
+ATR_RISK_MAX = 2.0     # 🔥 STEP 5A KEY PARAMETER
+
 MULTIPLIER = 3.0
 
 VO_FAST = 14
@@ -31,7 +32,7 @@ VALID_CANDLES = {
     "Bullish Engulfing",
     "Hammer",
     "Strong Bullish",
-    "Normal"
+    "Normal"   # dari STEP 4B
 }
 
 # === TP STRUCTURE (BELUM DIUBAH)
@@ -39,7 +40,7 @@ TP1_R = 1.0
 TP2_R = 1.5
 TP1_PORTION = 0.5
 TP2_PORTION = 0.5
-SOFT_BE_R = 0.0   # SOFT BE OFF
+SOFT_BE_R = 0.0
 
 # =====================================================
 # MARKET SYMBOL FETCHER
@@ -49,14 +50,12 @@ def get_liquid_symbols(min_vol):
     url = "https://www.okx.com/api/v5/market/tickers"
     r = requests.get(url, params={"instType": "SPOT"}, timeout=15)
     r.raise_for_status()
-
     return [
         d["instId"]
         for d in r.json()["data"]
         if d["instId"].endswith("-USDT")
         and float(d["volCcy24h"]) >= min_vol
     ]
-
 
 # =====================================================
 # INDICATORS
@@ -69,7 +68,7 @@ def supertrend(df, period, mult):
         (l - c.shift()).abs()
     ], axis=1).max(axis=1)
 
-    atr = tr.ewm(span=period, adjust=False).mean()
+    atr = tr.rolling(period).mean()
     hl2 = (h + l) / 2
 
     upper = hl2 + mult * atr
@@ -95,6 +94,15 @@ def volume_oscillator(v, f, s):
     ef = v.ewm(span=f, adjust=False).mean()
     es = v.ewm(span=s, adjust=False).mean()
     return (ef - es) / es * 100
+
+def atr_14(df):
+    h, l, c = df.high, df.low, df.close
+    tr = pd.concat([
+        (h - l),
+        (h - c.shift()).abs(),
+        (l - c.shift()).abs()
+    ], axis=1).max(axis=1)
+    return tr.rolling(ATR_PERIOD).mean()
 
 # =====================================================
 # PRICE ACTION
@@ -127,16 +135,17 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# ENTRY VALIDATION — STEP 4A
+# ENTRY VALIDATION
 # =====================================================
 def valid_entry(df, stl, trend, vo):
-    return trend.iloc[-1] == 1 and vo.iloc[-1] >= 0   # 🔧 RELAX VO
+    return trend.iloc[-1] == 1 and vo.iloc[-1] >= 0
 
 # =====================================================
-# TRADE BUILDER — DAILY EMA200 FILTER
+# TRADE BUILDER — STEP 5A ATR FILTER
 # =====================================================
 def build_trade_opsi_a_v3(df4h, df1d):
 
+    # Daily trend filter (EDGE CORE)
     ema200 = df1d.close.ewm(span=200, adjust=False).mean()
     if df1d.close.iloc[-1] < ema200.iloc[-1]:
         return None
@@ -151,11 +160,15 @@ def build_trade_opsi_a_v3(df4h, df1d):
     if risk <= 0:
         return None
 
+    # 🔥 STEP 5A — ATR RISK FILTER
+    atr = atr_14(df4h).iloc[-1]
+    if atr is None or risk / atr > ATR_RISK_MAX:
+        return None
+
     tp1 = entry + risk * TP1_R
     tp2 = entry + risk * TP2_R
-    soft_be = entry + risk * SOFT_BE_R
 
-    return entry, sl, tp1, tp2, soft_be
+    return entry, sl, tp1, tp2
 
 # =====================================================
 # BACKTEST
@@ -187,7 +200,7 @@ def backtest_symbol(okx, symbol):
         if not trade:
             continue
 
-        entry, sl, tp1, tp2, _ = trade
+        entry, sl, tp1, tp2 = trade
         hit_tp1 = False
         rr = None
 
@@ -221,8 +234,8 @@ def build_equity_curve(rr):
 # =====================================================
 # UI — BACKTEST ONLY
 # =====================================================
-st.set_page_config("OPSI A PRO v3 — STEP 4A", layout="wide")
-st.title("🚀 OPSI A PRO v3 — STEP 4A (Relax VO)")
+st.set_page_config("OPSI A PRO v3 — STEP 5A", layout="wide")
+st.title("🚀 OPSI A PRO v3 — STEP 5A (ATR Risk Filter)")
 
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
 
@@ -262,5 +275,3 @@ if st.button("🧪 Run Backtest"):
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("No trades found")
-
-
