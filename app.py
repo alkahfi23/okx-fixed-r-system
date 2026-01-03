@@ -4,10 +4,11 @@ import pandas as pd
 import requests
 import plotly.graph_objects as go
 import time
+import os
 from datetime import datetime
 
 # =====================================================
-# CONFIG — FINAL
+# CONFIG — FINAL (LOCK)
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -34,23 +35,55 @@ VALID_CANDLES = {
     "Normal"
 }
 
-# === TP FINAL (LOCK)
+# === TP FINAL (STEP 6A)
 TP1_R = 0.8
 TP2_R = 2.0
 TP1_PORTION = 0.3
 TP2_PORTION = 0.7
 
 # =====================================================
-# SYMBOL FETCH
+# SIGNAL HISTORY (CSV)
+# =====================================================
+SIGNAL_LOG_FILE = "signal_history.csv"
+
+def load_signal_history():
+    if os.path.exists(SIGNAL_LOG_FILE):
+        return pd.read_csv(SIGNAL_LOG_FILE)
+    return pd.DataFrame(columns=[
+        "Time","Symbol","Candle","Entry","SL","TP1","TP2","Status"
+    ])
+
+def save_signal(signal):
+    df = load_signal_history()
+
+    if not df.empty:
+        if ((df["Symbol"] == signal["Symbol"]) &
+            (df["Time"] == signal["Time"])).any():
+            return
+
+    df = pd.concat([df, pd.DataFrame([{
+        "Time": signal["Time"],
+        "Symbol": signal["Symbol"],
+        "Candle": signal["Candle"],
+        "Entry": signal["Entry"],
+        "SL": signal["SL"],
+        "TP1": signal["TP1"],
+        "TP2": signal["TP2"],
+        "Status": "OPEN"
+    }])], ignore_index=True)
+
+    df.to_csv(SIGNAL_LOG_FILE, index=False)
+
+# =====================================================
+# MARKET SYMBOL FETCHER
 # =====================================================
 @st.cache_data(ttl=300)
 def get_liquid_symbols(min_vol):
     url = "https://www.okx.com/api/v5/market/tickers"
-    r = requests.get(url, params={"instType": "SPOT"}, timeout=15)
+    r = requests.get(url, params={"instType":"SPOT"}, timeout=15)
     r.raise_for_status()
     return [
-        d["instId"]
-        for d in r.json()["data"]
+        d["instId"] for d in r.json()["data"]
         if d["instId"].endswith("-USDT")
         and float(d["volCcy24h"]) >= min_vol
     ]
@@ -59,9 +92,9 @@ def get_liquid_symbols(min_vol):
 # INDICATORS
 # =====================================================
 def supertrend(df, period, mult):
-    h, l, c = df.high, df.low, df.close
+    h,l,c = df.high,df.low,df.close
     tr = pd.concat([(h-l),(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-    atr = tr.ewm(span=period, adjust=False).mean()
+    atr = tr.ewm(span=period,adjust=False).mean()
     hl2 = (h+l)/2
 
     upper = hl2 + mult*atr
@@ -75,16 +108,16 @@ def supertrend(df, period, mult):
 
     for i in range(1,len(df)):
         if c.iloc[i] > stl.iloc[i-1]:
-            stl.iloc[i] = max(lower.iloc[i], stl.iloc[i-1])
+            stl.iloc[i] = max(lower.iloc[i],stl.iloc[i-1])
             trend.iloc[i] = 1
         else:
-            stl.iloc[i] = min(upper.iloc[i], stl.iloc[i-1])
+            stl.iloc[i] = min(upper.iloc[i],stl.iloc[i-1])
             trend.iloc[i] = -1
 
-    return stl, trend
+    return stl,trend
 
 def volume_oscillator(v,f,s):
-    return (v.ewm(span=f).mean() - v.ewm(span=s).mean()) / v.ewm(span=s).mean() * 100
+    return (v.ewm(span=f).mean()-v.ewm(span=s).mean())/v.ewm(span=s).mean()*100
 
 # =====================================================
 # PRICE ACTION
@@ -104,7 +137,7 @@ def detect_candle(df):
     return "Normal"
 
 # =====================================================
-# SUPPORT
+# SUPPORT (DAILY)
 # =====================================================
 def find_support(df,lb):
     s=[]
@@ -114,7 +147,7 @@ def find_support(df,lb):
     return sorted(set(s))
 
 # =====================================================
-# SIGNAL CHECK
+# SIGNAL CHECK (FINAL LOGIC)
 # =====================================================
 def check_signal(okx,symbol):
     df4h = pd.DataFrame(
@@ -159,10 +192,10 @@ def check_signal(okx,symbol):
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OPSI A PRO v3 — LIVE SIGNAL",layout="wide")
-st.title("🚀 OPSI A PRO v3 — LIVE SIGNAL")
+st.set_page_config("OPSI A PRO v3 — LIVE READY",layout="wide")
+st.title("🚀 OPSI A PRO v3 — LIVE SIGNAL + HISTORY")
 
-tab1,tab2 = st.tabs(["📡 Live Signal","🧪 Backtest"])
+tab1,tab2,tab3 = st.tabs(["📡 Live Signal","📜 Riwayat Sinyal","🧪 Backtest (LOCK)"])
 
 okx = ccxt.okx({"enableRateLimit":True})
 
@@ -180,6 +213,7 @@ with tab1:
                     sig = check_signal(okx,s)
                     if sig:
                         sig["Time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+                        save_signal(sig)
                         signals.append(sig)
                 except:
                     pass
@@ -192,7 +226,25 @@ with tab1:
             st.warning("Tidak ada setup valid saat ini")
 
 # =====================================================
-# BACKTEST TAB (OPTIONAL)
+# SIGNAL HISTORY TAB
 # =====================================================
 with tab2:
-    st.info("Backtest sudah LOCK — gunakan versi sebelumnya")
+    st.subheader("📜 Riwayat Sinyal")
+    history = load_signal_history()
+
+    if history.empty:
+        st.info("Belum ada riwayat sinyal.")
+    else:
+        st.dataframe(history,use_container_width=True)
+        st.download_button(
+            "⬇️ Download CSV",
+            history.to_csv(index=False),
+            file_name="signal_history.csv",
+            mime="text/csv"
+        )
+
+# =====================================================
+# BACKTEST TAB (LOCK)
+# =====================================================
+with tab3:
+    st.info("Backtest sudah LOCK. Gunakan versi riset sebelumnya.")
