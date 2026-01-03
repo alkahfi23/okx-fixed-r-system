@@ -4,7 +4,7 @@ import pandas as pd
 import requests
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # =====================================================
 # CONFIG — FINAL (LOCK)
@@ -41,6 +41,14 @@ TP1_PORTION = 0.3
 TP2_PORTION = 0.7
 
 SIGNAL_LOG_FILE = "signal_history.csv"
+
+# =====================================================
+# TIMEZONE — WIB
+# =====================================================
+WIB = timezone(timedelta(hours=7))
+
+def now_wib():
+    return datetime.now(timezone.utc).astimezone(WIB).strftime("%Y-%m-%d %H:%M WIB")
 
 # =====================================================
 # SIGNAL HISTORY
@@ -147,10 +155,9 @@ def find_support(df,lb):
     return sorted(set(s))
 
 # =====================================================
-# SIGNAL CHECK (FINAL)
+# SIGNAL CHECK (FINAL + BLOCK DUPLICATE)
 # =====================================================
 def check_signal(okx,symbol):
-    # 🔒 BLOCK DUPLICATE OPEN SIGNAL
     if has_open_signal(symbol):
         return None
 
@@ -196,8 +203,8 @@ def check_signal(okx,symbol):
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OPSI A PRO v3 — LIVE READY",layout="wide")
-st.title("🚀 OPSI A PRO v3 — LIVE SIGNAL + HISTORY")
+st.set_page_config("OPSI A PRO v3 — LIVE READY (WIB)",layout="wide")
+st.title("🚀 OPSI A PRO v3 — LIVE SIGNAL + HISTORY (WIB)")
 
 tab1,tab2 = st.tabs(["📡 Live Signal","📜 Riwayat Sinyal"])
 
@@ -216,7 +223,7 @@ with tab1:
                 try:
                     sig = check_signal(okx,s)
                     if sig:
-                        sig["Time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+                        sig["Time"] = now_wib()
                         save_signal(sig)
                         signals.append(sig)
                 except:
@@ -227,13 +234,13 @@ with tab1:
             st.success(f"🔥 {len(signals)} SIGNAL AKTIF")
             st.dataframe(pd.DataFrame(signals),use_container_width=True)
         else:
-            st.warning("Tidak ada setup valid (atau semua pair masih OPEN).")
+            st.warning("Tidak ada setup valid atau semua pair masih OPEN.")
 
 # =====================================================
 # SIGNAL HISTORY TAB
 # =====================================================
 with tab2:
-    st.subheader("📜 Riwayat Sinyal")
+    st.subheader("📜 Riwayat Sinyal (WIB)")
     history = load_signal_history()
 
     if history.empty:
