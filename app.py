@@ -2,7 +2,6 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import requests
-import plotly.graph_objects as go
 import time
 import os
 from datetime import datetime
@@ -41,11 +40,11 @@ TP2_R = 2.0
 TP1_PORTION = 0.3
 TP2_PORTION = 0.7
 
-# =====================================================
-# SIGNAL HISTORY (CSV)
-# =====================================================
 SIGNAL_LOG_FILE = "signal_history.csv"
 
+# =====================================================
+# SIGNAL HISTORY
+# =====================================================
 def load_signal_history():
     if os.path.exists(SIGNAL_LOG_FILE):
         return pd.read_csv(SIGNAL_LOG_FILE)
@@ -53,13 +52,14 @@ def load_signal_history():
         "Time","Symbol","Candle","Entry","SL","TP1","TP2","Status"
     ])
 
+def has_open_signal(symbol):
+    df = load_signal_history()
+    if df.empty:
+        return False
+    return ((df["Symbol"] == symbol) & (df["Status"] == "OPEN")).any()
+
 def save_signal(signal):
     df = load_signal_history()
-
-    if not df.empty:
-        if ((df["Symbol"] == signal["Symbol"]) &
-            (df["Time"] == signal["Time"])).any():
-            return
 
     df = pd.concat([df, pd.DataFrame([{
         "Time": signal["Time"],
@@ -117,7 +117,7 @@ def supertrend(df, period, mult):
     return stl,trend
 
 def volume_oscillator(v,f,s):
-    return (v.ewm(span=f).mean()-v.ewm(span=s).mean())/v.ewm(span=s).mean()*100
+    return (v.ewm(span=f).mean()-v.ewm(span=s).mean()) / v.ewm(span=s).mean() * 100
 
 # =====================================================
 # PRICE ACTION
@@ -147,9 +147,13 @@ def find_support(df,lb):
     return sorted(set(s))
 
 # =====================================================
-# SIGNAL CHECK (FINAL LOGIC)
+# SIGNAL CHECK (FINAL)
 # =====================================================
 def check_signal(okx,symbol):
+    # 🔒 BLOCK DUPLICATE OPEN SIGNAL
+    if has_open_signal(symbol):
+        return None
+
     df4h = pd.DataFrame(
         okx.fetch_ohlcv(symbol,ENTRY_TF,limit=LIMIT_4H),
         columns=["t","open","high","low","close","volume"]
@@ -195,7 +199,7 @@ def check_signal(okx,symbol):
 st.set_page_config("OPSI A PRO v3 — LIVE READY",layout="wide")
 st.title("🚀 OPSI A PRO v3 — LIVE SIGNAL + HISTORY")
 
-tab1,tab2,tab3 = st.tabs(["📡 Live Signal","📜 Riwayat Sinyal","🧪 Backtest (LOCK)"])
+tab1,tab2 = st.tabs(["📡 Live Signal","📜 Riwayat Sinyal"])
 
 okx = ccxt.okx({"enableRateLimit":True})
 
@@ -223,7 +227,7 @@ with tab1:
             st.success(f"🔥 {len(signals)} SIGNAL AKTIF")
             st.dataframe(pd.DataFrame(signals),use_container_width=True)
         else:
-            st.warning("Tidak ada setup valid saat ini")
+            st.warning("Tidak ada setup valid (atau semua pair masih OPEN).")
 
 # =====================================================
 # SIGNAL HISTORY TAB
@@ -242,9 +246,3 @@ with tab2:
             file_name="signal_history.csv",
             mime="text/csv"
         )
-
-# =====================================================
-# BACKTEST TAB (LOCK)
-# =====================================================
-with tab3:
-    st.info("Backtest sudah LOCK. Gunakan versi riset sebelumnya.")
