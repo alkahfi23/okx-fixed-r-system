@@ -6,7 +6,7 @@ import time
 import plotly.graph_objects as go
 
 # =====================================================
-# CONFIG — OPSI A PRO v3 (NO BTC FILTER)
+# CONFIG — OPSI A PRO v3 (TUNED)
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -30,12 +30,12 @@ RATE_LIMIT_DELAY = 0.15
 
 VALID_CANDLES = {"Bullish Engulfing", "Hammer", "Strong Bullish"}
 
-# OPSI A PRO v3 (SOFT BE)
+# === TUNING STEP 2 ===
 TP1_R = 1.0
 TP2_R = 1.5
 TP1_PORTION = 0.5
 TP2_PORTION = 0.5
-SOFT_BE_R = -0.25
+SOFT_BE_R = 0.0   # ❗ SOFT BE OFF (EDGE TEST)
 
 # =====================================================
 # HELPERS
@@ -130,10 +130,10 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# ENTRY VALIDATION
+# ENTRY VALIDATION (STEP 1 — RELAX ENTRY)
 # =====================================================
 def valid_entry(df, stl, trend, vo):
-    return trend.iloc[-1] == 1 and trend.iloc[-2] == -1 and vo.iloc[-1] >= 5
+    return trend.iloc[-1] == 1 and vo.iloc[-1] >= 5
 
 # =====================================================
 # TRADE BUILDER
@@ -161,11 +161,12 @@ def build_trade_opsi_a_v3(df4h, df1d):
 def backtest_symbol(okx, symbol):
     df = pd.DataFrame(
         okx.fetch_ohlcv(symbol, ENTRY_TF, limit=BACKTEST_LIMIT),
-        columns=["t", "open", "high", "low", "close", "volume"]
+        columns=["t","open","high","low","close","volume"]
     )
+
     df1d = pd.DataFrame(
         okx.fetch_ohlcv(symbol, SR_TF, limit=LIMIT_1D),
-        columns=["t", "open", "high", "low", "close", "volume"]
+        columns=["t","open","high","low","close","volume"]
     )
 
     trades = []
@@ -195,11 +196,11 @@ def backtest_symbol(okx, symbol):
                 continue
 
             if hit_tp1:
-                if df.low.iloc[j] <= soft_be:
-                    rr = TP1_PORTION * TP1_R + TP2_PORTION * SOFT_BE_R
-                    break
                 if df.high.iloc[j] >= tp2:
                     rr = TP1_PORTION * TP1_R + TP2_PORTION * TP2_R
+                    break
+                if SOFT_BE_R != 0 and df.low.iloc[j] <= soft_be:
+                    rr = TP1_PORTION * TP1_R
                     break
 
             if not hit_tp1 and df.low.iloc[j] <= sl:
@@ -223,89 +224,11 @@ def build_equity_curve(rr):
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OKX OPSI A PRO v3", layout="wide")
-st.title("🚀 OKX Spot Screener & Backtest — OPSI A PRO v3")
+st.set_page_config("OKX OPSI A PRO v3 — Tuned", layout="wide")
+st.title("🚀 OPSI A PRO v3 — TUNED (STEP 1 + 2)")
 
 tab1, tab2 = st.tabs(["🔍 Screener", "🧪 Backtest"])
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
-
-# =====================================================
-# SCREENER (INFORMATIVE)
-# =====================================================
-with tab1:
-    if st.button("🔍 Run Screener"):
-        symbols = get_liquid_symbols(MIN_USDT_VOLUME)
-        results = []
-
-        progress = st.progress(0)
-        status = st.empty()
-        counter = st.empty()
-
-        total = len(symbols)
-
-        for i, s in enumerate(symbols, start=1):
-            status.info(f"🔍 Scanning **{s}** ({i}/{total})")
-            counter.write(f"✅ Valid setups found: **{len(results)}**")
-
-            try:
-                df4h = pd.DataFrame(
-                    okx.fetch_ohlcv(s, ENTRY_TF, limit=LIMIT_4H),
-                    columns=["t", "open", "high", "low", "close", "volume"]
-                )
-
-                stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
-                vo = volume_oscillator(df4h.volume, VO_FAST, VO_SLOW)
-
-                if not valid_entry(df4h, stl, trend, vo):
-                    progress.progress(i / total)
-                    time.sleep(RATE_LIMIT_DELAY)
-                    continue
-
-                candle = detect_candle(df4h)
-                if candle not in VALID_CANDLES:
-                    progress.progress(i / total)
-                    time.sleep(RATE_LIMIT_DELAY)
-                    continue
-
-                df1d = pd.DataFrame(
-                    okx.fetch_ohlcv(s, SR_TF, limit=LIMIT_1D),
-                    columns=["t", "open", "high", "low", "close", "volume"]
-                )
-
-                trade = build_trade_opsi_a_v3(df4h, df1d)
-                if not trade:
-                    progress.progress(i / total)
-                    time.sleep(RATE_LIMIT_DELAY)
-                    continue
-
-                entry, sl, tp1, tp2, _ = trade
-                risk = round((entry - sl) / entry * 100, 2)
-
-                results.append({
-                    "Symbol": s,
-                    "Candle": candle,
-                    "Entry": fmt_price(entry),
-                    "SL": fmt_price(sl),
-                    "TP1": fmt_price(tp1),
-                    "TP2": fmt_price(tp2),
-                    "Risk %": risk
-                })
-
-            except:
-                pass
-
-            progress.progress(i / total)
-            time.sleep(RATE_LIMIT_DELAY)
-
-        status.empty()
-        counter.empty()
-        progress.empty()
-
-        if results:
-            st.success(f"🎯 Scan selesai — ditemukan {len(results)} setup")
-            st.dataframe(pd.DataFrame(results), use_container_width=True)
-        else:
-            st.warning("❌ Scan selesai — tidak ada setup")
 
 # =====================================================
 # BACKTEST + EQUITY CURVE
@@ -340,8 +263,6 @@ with tab2:
 
             fig.update_layout(
                 title="📈 Equity Curve & Drawdown (R-based)",
-                xaxis_title="Trades",
-                yaxis_title="R Multiple",
                 template="plotly_dark",
                 height=520
             )
