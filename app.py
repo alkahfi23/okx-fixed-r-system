@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
-BTC_SYMBOL = "BTC-USDT"
+#BTC_SYMBOL = "BTC-USDT"
 
 LIMIT_4H = 200
 LIMIT_1D = 200
@@ -119,19 +119,19 @@ def volume_oscillator(v, f, s):
 # =====================================================
 # BTC TREND FILTER — FIXED CACHE
 # =====================================================
-@st.cache_data(ttl=600)
-def btc_trend_is_bullish():
-    okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
+#@st.cache_data(ttl=600)
+#def btc_trend_is_bullish():
+   # okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
 
-    df = pd.DataFrame(
-        okx.fetch_ohlcv(BTC_SYMBOL, "1d", limit=200),
-        columns=["t","open","high","low","close","volume"]
-    )
+   # df = pd.DataFrame(
+     #   okx.fetch_ohlcv(BTC_SYMBOL, "1d", limit=200),
+    #    columns=["t","open","high","low","close","volume"]
+  #  )
 
-    stl, trend = supertrend(df, ATR_PERIOD, MULTIPLIER)
-    ema200 = df.close.ewm(span=200, adjust=False).mean()
+  #  stl, trend = supertrend(df, ATR_PERIOD, MULTIPLIER)
+#    ema200 = df.close.ewm(span=200, adjust=False).mean()
 
-    return trend.iloc[-1] == 1 or df.close.iloc[-1] > ema200.iloc[-1]
+#    return trend.iloc[-1] == 1 or df.close.iloc[-1] > ema200.iloc[-1]
 
 # =====================================================
 # PRICE ACTION
@@ -340,3 +340,4 @@ with tab2:
             st.metric("Avg RR", round(bt["RR"].mean(), 2))
         else:
             st.warning("No trades found")
+
