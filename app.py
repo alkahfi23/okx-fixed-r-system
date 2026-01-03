@@ -6,7 +6,7 @@ import time
 import plotly.graph_objects as go
 
 # =====================================================
-# CONFIG — OPSI A PRO v3 (STEP 3)
+# CONFIG — OPSI A PRO v3 (STEP 4A)
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -26,7 +26,6 @@ SR_LOOKBACK = 5
 ZONE_BUFFER = 0.008
 
 MIN_USDT_VOLUME = 2_000_000
-RATE_LIMIT_DELAY = 0.15
 
 VALID_CANDLES = {"Bullish Engulfing", "Hammer", "Strong Bullish"}
 
@@ -35,30 +34,7 @@ TP1_R = 1.0
 TP2_R = 1.5
 TP1_PORTION = 0.5
 TP2_PORTION = 0.5
-SOFT_BE_R = 0.0   # STEP 2 — SOFT BE OFF
-
-# =====================================================
-# HELPERS
-# =====================================================
-def fmt_price(x):
-    if x >= 1:
-        return f"{x:.4f}"
-    elif x >= 0.01:
-        return f"{x:.6f}"
-    else:
-        return f"{x:.8f}"
-
-@st.cache_data(ttl=300)
-def get_liquid_symbols(min_vol):
-    url = "https://www.okx.com/api/v5/market/tickers"
-    r = requests.get(url, params={"instType": "SPOT"}, timeout=15)
-    r.raise_for_status()
-    return [
-        d["instId"]
-        for d in r.json()["data"]
-        if d["instId"].endswith("-USDT")
-        and float(d["volCcy24h"]) >= min_vol
-    ]
+SOFT_BE_R = 0.0   # SOFT BE OFF
 
 # =====================================================
 # INDICATORS
@@ -129,17 +105,16 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# ENTRY VALIDATION (STEP 1)
+# ENTRY VALIDATION — STEP 4A
 # =====================================================
 def valid_entry(df, stl, trend, vo):
-    return trend.iloc[-1] == 1 and vo.iloc[-1] >= 5
+    return trend.iloc[-1] == 1 and vo.iloc[-1] >= 0   # 🔧 RELAX VO
 
 # =====================================================
-# TRADE BUILDER — STEP 3 (DAILY EMA200 FILTER)
+# TRADE BUILDER — DAILY EMA200 FILTER
 # =====================================================
 def build_trade_opsi_a_v3(df4h, df1d):
 
-    # === STEP 3 FILTER ===
     ema200 = df1d.close.ewm(span=200, adjust=False).mean()
     if df1d.close.iloc[-1] < ema200.iloc[-1]:
         return None
@@ -190,7 +165,7 @@ def backtest_symbol(okx, symbol):
         if not trade:
             continue
 
-        entry, sl, tp1, tp2, soft_be = trade
+        entry, sl, tp1, tp2, _ = trade
         hit_tp1 = False
         rr = None
 
@@ -222,10 +197,10 @@ def build_equity_curve(rr):
     return equity, drawdown
 
 # =====================================================
-# UI — BACKTEST ONLY (FOCUS TEST)
+# UI — BACKTEST ONLY
 # =====================================================
-st.set_page_config("OPSI A PRO v3 — STEP 3", layout="wide")
-st.title("🚀 OPSI A PRO v3 — STEP 3 (Daily EMA200 Filter)")
+st.set_page_config("OPSI A PRO v3 — STEP 4A", layout="wide")
+st.title("🚀 OPSI A PRO v3 — STEP 4A (Relax VO)")
 
 okx = ccxt.okx({"enableRateLimit": True, "timeout": 30000})
 
