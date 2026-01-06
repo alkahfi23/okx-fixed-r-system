@@ -40,7 +40,11 @@ TP2_R = 2.0
 TP1_PORTION = 0.3
 TP2_PORTION = 0.7
 
-SIGNAL_LOG_FILE = "signal_history.csv"
+# =====================================================
+# FILE PATH (ANTI HILANG STREAMLIT)
+# =====================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SIGNAL_LOG_FILE = os.path.join(BASE_DIR, "signal_history.csv")
 
 # =====================================================
 # TIMEZONE — WIB
@@ -51,14 +55,31 @@ def now_wib():
     return datetime.now(timezone.utc).astimezone(WIB).strftime("%Y-%m-%d %H:%M WIB")
 
 # =====================================================
-# SIGNAL HISTORY
+# PRIORITY & RATING
+# =====================================================
+PAIR_PRIORITY = {
+    "BCH-USDT": 5,
+    "WLFI-USDT": 4,
+    "ZEC-USDT": 3,
+    "PEPE-USDT": 2
+}
+
+def get_star_rating(symbol):
+    return "⭐" * PAIR_PRIORITY.get(symbol, 3)
+
+# =====================================================
+# SIGNAL HISTORY (PERSISTENT)
 # =====================================================
 def load_signal_history():
-    if os.path.exists(SIGNAL_LOG_FILE):
-        return pd.read_csv(SIGNAL_LOG_FILE)
-    return pd.DataFrame(columns=[
-        "Time","Symbol","Candle","Entry","SL","TP1","TP2","Status"
-    ])
+    if not os.path.exists(SIGNAL_LOG_FILE):
+        df = pd.DataFrame(columns=[
+            "Time","Symbol","Candle",
+            "Entry","SL","TP1","TP2",
+            "Priority","Rating","Status"
+        ])
+        df.to_csv(SIGNAL_LOG_FILE, index=False)
+        return df
+    return pd.read_csv(SIGNAL_LOG_FILE)
 
 def has_open_signal(symbol):
     df = load_signal_history()
@@ -68,18 +89,7 @@ def has_open_signal(symbol):
 
 def save_signal(signal):
     df = load_signal_history()
-
-    df = pd.concat([df, pd.DataFrame([{
-        "Time": signal["Time"],
-        "Symbol": signal["Symbol"],
-        "Candle": signal["Candle"],
-        "Entry": signal["Entry"],
-        "SL": signal["SL"],
-        "TP1": signal["TP1"],
-        "TP2": signal["TP2"],
-        "Status": "OPEN"
-    }])], ignore_index=True)
-
+    df = pd.concat([df, pd.DataFrame([signal])], ignore_index=True)
     df.to_csv(SIGNAL_LOG_FILE, index=False)
 
 # =====================================================
@@ -108,8 +118,8 @@ def supertrend(df, period, mult):
     upper = hl2 + mult*atr
     lower = hl2 - mult*atr
 
-    stl = pd.Series(index=df.index)
-    trend = pd.Series(index=df.index)
+    stl = pd.Series(index=df.index, dtype=float)
+    trend = pd.Series(index=df.index, dtype=int)
 
     stl.iloc[0] = upper.iloc[0]
     trend.iloc[0] = -1
@@ -155,7 +165,7 @@ def find_support(df,lb):
     return sorted(set(s))
 
 # =====================================================
-# SIGNAL CHECK (FINAL + BLOCK DUPLICATE)
+# SIGNAL CHECK (FINAL)
 # =====================================================
 def check_signal(okx,symbol):
     if has_open_signal(symbol):
@@ -191,14 +201,35 @@ def check_signal(okx,symbol):
     tp1 = entry + risk*TP1_R
     tp2 = entry + risk*TP2_R
 
+    priority = PAIR_PRIORITY.get(symbol,3)
+
     return {
-        "Symbol":symbol,
-        "Candle":candle,
-        "Entry":round(entry,6),
-        "SL":round(sl,6),
-        "TP1":round(tp1,6),
-        "TP2":round(tp2,6)
+        "Time": now_wib(),
+        "Symbol": symbol,
+        "Candle": candle,
+        "Entry": round(entry,8),
+        "SL": round(sl,8),
+        "TP1": round(tp1,8),
+        "TP2": round(tp2,8),
+        "Priority": priority,
+        "Rating": "⭐"*priority,
+        "Status": "OPEN"
     }
+
+# =====================================================
+# ROW COLOR BASED ON PRIORITY
+# =====================================================
+def highlight_rating(row):
+    p = row["Priority"]
+    if p == 5:
+        return ["background-color:#14532d;color:white"]*len(row)
+    if p == 4:
+        return ["background-color:#1e3a8a;color:white"]*len(row)
+    if p == 3:
+        return ["background-color:#78350f;color:white"]*len(row)
+    if p == 2:
+        return ["background-color:#7f1d1d;color:white"]*len(row)
+    return [""]*len(row)
 
 # =====================================================
 # UI
@@ -223,7 +254,6 @@ with tab1:
                 try:
                     sig = check_signal(okx,s)
                     if sig:
-                        sig["Time"] = now_wib()
                         save_signal(sig)
                         signals.append(sig)
                 except:
@@ -231,8 +261,12 @@ with tab1:
                 time.sleep(RATE_LIMIT_DELAY)
 
         if signals:
-            st.success(f"🔥 {len(signals)} SIGNAL AKTIF")
-            st.dataframe(pd.DataFrame(signals),use_container_width=True)
+            df_sig = pd.DataFrame(signals).sort_values("Priority",ascending=False)
+            st.success(f"🔥 {len(df_sig)} SIGNAL AKTIF")
+            st.dataframe(
+                df_sig.style.apply(highlight_rating,axis=1),
+                use_container_width=True
+            )
         else:
             st.warning("Tidak ada setup valid atau semua pair masih OPEN.")
 
@@ -246,7 +280,11 @@ with tab2:
     if history.empty:
         st.info("Belum ada riwayat sinyal.")
     else:
-        st.dataframe(history,use_container_width=True)
+        history = history.sort_values("Time",ascending=False)
+        st.dataframe(
+            history.style.apply(highlight_rating,axis=1),
+            use_container_width=True
+        )
         st.download_button(
             "⬇️ Download CSV",
             history.to_csv(index=False),
