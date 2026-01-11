@@ -4,10 +4,11 @@ import pandas as pd
 import requests
 import time
 import os
+import random
 from datetime import datetime, timezone, timedelta
 
 # =====================================================
-# CONFIG — FINAL (LOCK)
+# CONFIG — OPSI A PRO v3.2
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -20,12 +21,13 @@ MULTIPLIER = 3.0
 
 VO_FAST = 14
 VO_SLOW = 28
+VO_MIN = 5  # stronger confirmation
 
 SR_LOOKBACK = 5
 ZONE_BUFFER = 0.008
-
 MIN_USDT_VOLUME = 2_000_000
 RATE_LIMIT_DELAY = 0.15
+MAX_SCAN_SYMBOLS = 120
 
 VALID_CANDLES = {
     "Bullish Engulfing",
@@ -34,7 +36,6 @@ VALID_CANDLES = {
     "Normal"
 }
 
-# TP CONFIG
 TP1_R = 0.8
 TP2_R = 2.0
 
@@ -61,6 +62,13 @@ PAIR_PRIORITY = {
     "ZEC-USDT": 3,
     "PEPE-USDT": 2
 }
+
+# =====================================================
+# CCXT INSTANCE (CACHE)
+# =====================================================
+@st.cache_resource
+def get_okx():
+    return ccxt.okx({"enableRateLimit": True})
 
 # =====================================================
 # SIGNAL HISTORY
@@ -95,11 +103,12 @@ def get_liquid_symbols(min_vol):
     url = "https://www.okx.com/api/v5/market/tickers"
     r = requests.get(url, params={"instType": "SPOT"}, timeout=15)
     r.raise_for_status()
-    return [
+    symbols = [
         d["instId"] for d in r.json()["data"]
         if d["instId"].endswith("-USDT")
         and float(d["volCcy24h"]) >= min_vol
     ]
+    return random.sample(symbols, min(MAX_SCAN_SYMBOLS, len(symbols)))
 
 # =====================================================
 # INDICATORS
@@ -121,17 +130,16 @@ def supertrend(df, period, mult):
     stl = pd.Series(index=df.index, dtype=float)
     trend = pd.Series(index=df.index, dtype=int)
 
-    # INIT (ANTI BIAS)
-    trend.iloc[0] = 1 if c.iloc[0] > hl2.iloc[0] else -1
-    stl.iloc[0] = lower.iloc[0] if trend.iloc[0] == 1 else upper.iloc[0]
+    trend.iloc[0] = 1
+    stl.iloc[0] = lower.iloc[0]
 
     for i in range(1, len(df)):
-        if c.iloc[i] > stl.iloc[i-1]:
+        if trend.iloc[i-1] == 1:
             stl.iloc[i] = max(lower.iloc[i], stl.iloc[i-1])
-            trend.iloc[i] = 1
+            trend.iloc[i] = 1 if c.iloc[i] > stl.iloc[i] else -1
         else:
             stl.iloc[i] = min(upper.iloc[i], stl.iloc[i-1])
-            trend.iloc[i] = -1
+            trend.iloc[i] = -1 if c.iloc[i] < stl.iloc[i] else 1
 
     return stl, trend
 
@@ -145,34 +153,41 @@ def volume_oscillator(v, f, s):
 # =====================================================
 def detect_candle(df):
     o, h, l, c = df.open, df.high, df.low, df.close
-    po, pc = o.shift(1), c.shift(1)
-
     body = abs(c - o)
     rng = h - l
 
-    if c.iloc[-1] > o.iloc[-1] and pc.iloc[-1] < po.iloc[-1] and c.iloc[-1] > po.iloc[-1]:
+    if rng.iloc[-1] < df.high.iloc[-20:].mean() * 0.3:
+        return "Normal"
+
+    if c.iloc[-1] > o.iloc[-1] and c.iloc[-2] < o.iloc[-2] and c.iloc[-1] > o.iloc[-2]:
         return "Bullish Engulfing"
 
     if c.iloc[-1] > o.iloc[-1] and (o.iloc[-1] - l.iloc[-1]) > 2 * body.iloc[-1]:
         return "Hammer"
 
-    if rng.iloc[-1] > 0 and body.iloc[-1] / rng.iloc[-1] > 0.65 and c.iloc[-1] > o.iloc[-1]:
+    if body.iloc[-1] / rng.iloc[-1] > 0.65 and c.iloc[-1] > o.iloc[-1]:
         return "Strong Bullish"
 
     return "Normal"
 
 # =====================================================
-# SUPPORT DAILY
+# SUPPORT DAILY (CLUSTERED)
 # =====================================================
 def find_support(df, lb):
-    supports = []
+    raw = []
     for i in range(lb, len(df) - lb):
         if df.low.iloc[i] == min(df.low.iloc[i-lb:i+lb+1]):
-            supports.append(df.low.iloc[i])
-    return sorted(set(supports))
+            raw.append(df.low.iloc[i])
+
+    raw = sorted(set(raw))
+    filtered = []
+    for s in raw:
+        if not filtered or abs(s - filtered[-1]) / s > 0.01:
+            filtered.append(s)
+    return filtered
 
 # =====================================================
-# SIGNAL CHECK (FINAL STABLE)
+# SIGNAL CHECK — v3.2
 # =====================================================
 def check_signal(okx, symbol):
     if has_open_signal(symbol):
@@ -192,14 +207,11 @@ def check_signal(okx, symbol):
     vo = volume_oscillator(df4h.volume, VO_FAST, VO_SLOW)
     candle = detect_candle(df4h)
 
-    if pd.isna(vo.iloc[-1]):
-        return None
-
-    if trend.iloc[-1] != 1 or vo.iloc[-1] < 0 or candle not in VALID_CANDLES:
+    if trend.iloc[-1] != 1 or vo.iloc[-1] < VO_MIN or candle not in VALID_CANDLES:
         return None
 
     ema200 = df1d.close.ewm(span=200).mean()
-    if df1d.close.iloc[-1] < ema200.iloc[-1]:
+    if ema200.isna().iloc[-1] or df1d.close.iloc[-1] < ema200.iloc[-1]:
         return None
 
     entry = df4h.close.iloc[-1]
@@ -208,8 +220,6 @@ def check_signal(okx, symbol):
         return None
 
     sl = max(supports) * (1 - ZONE_BUFFER)
-
-    # ANTI MICRO SL
     if entry - sl < entry * 0.002:
         return None
 
@@ -235,12 +245,11 @@ def check_signal(okx, symbol):
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OPSI A PRO v3.1 — LIVE (WIB)", layout="wide")
-st.title("🚀 OPSI A PRO v3.1 — LIVE SIGNAL + HISTORY")
+st.set_page_config("OPSI A PRO v3.2 — LIVE (WIB)", layout="wide")
+st.title("🚀 OPSI A PRO v3.2 — LIVE SIGNAL + HISTORY")
 
 tab1, tab2 = st.tabs(["📡 Live Signal", "📜 Riwayat Sinyal"])
-
-okx = ccxt.okx({"enableRateLimit": True})
+okx = get_okx()
 
 with tab1:
     if st.button("🔍 Scan Live Signal"):
