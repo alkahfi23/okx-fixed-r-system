@@ -8,7 +8,6 @@ import random
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import matplotlib.pyplot as plt
 from datetime import datetime, timezone, timedelta
 
 # =====================================================
@@ -256,7 +255,7 @@ def check_signal(okx,symbol):
     return signal,df4h.tail(100),stl.tail(100),adl.tail(100)
 
 # =====================================================
-# MONTE CARLO
+# MONTE CARLO (PLOTLY)
 # =====================================================
 def monte_carlo(r_values,start=10000,risk=0.01,trades=300,sims=2000):
     curves=[]
@@ -273,8 +272,7 @@ def monte_carlo(r_values,start=10000,risk=0.01,trades=300,sims=2000):
         peak=np.maximum.accumulate(eq)
         return ((eq-peak)/peak).min()
 
-    return {
-        "curves":curves,
+    return curves, {
         "median_final":np.median(curves[:,-1]),
         "worst_final":curves[:,-1].min(),
         "best_final":curves[:,-1].max(),
@@ -286,8 +284,8 @@ def monte_carlo(r_values,start=10000,risk=0.01,trades=300,sims=2000):
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OPSI A PRO v3.5",layout="wide")
-st.title("🚀 OPSI A PRO v3.5 — FULL SYSTEM")
+st.set_page_config("OPSI A PRO v3.5.1",layout="wide")
+st.title("🚀 OPSI A PRO v3.5.1 — FULL SYSTEM")
 
 tab1,tab2,tab3=st.tabs(["📡 Live Signal","📜 Riwayat","🎲 Monte Carlo"])
 okx=get_okx()
@@ -323,18 +321,22 @@ with tab3:
     st.subheader("🎲 Monte Carlo Risk Simulation")
     df_r=load_trade_results()
     if df_r.empty:
-        st.info("Isi trade_results.csv dengan kolom R (contoh: -1, 0.8, 2)")
+        st.info("Isi trade_results.csv kolom R (contoh: -1, 0.8, 2)")
     else:
         r=df_r["R"].values
         risk=st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
         trades=st.slider("Trades / Simulation",50,500,300)
-        if st.button("Run Monte Carlo"):
-            res=monte_carlo(r, risk=risk, trades=trades)
-            st.write(f"Median Final: ${res['median_final']:,.0f}")
-            st.write(f"Worst DD: {res['worst_dd']*100:.1f}%")
-            st.write(f"Ruin Prob: {res['ruin']*100:.2f}%")
 
-            fig,ax=plt.subplots()
-            for i in range(50):
-                ax.plot(res["curves"][i],alpha=0.2)
-            st.pyplot(fig)
+        if st.button("Run Monte Carlo"):
+            curves,res=monte_carlo(r,risk=risk,trades=trades)
+
+            st.write(f"Median Final Balance: ${res['median_final']:,.0f}")
+            st.write(f"Worst Max DD: {res['worst_dd']*100:.1f}%")
+            st.write(f"Ruin Probability: {res['ruin']*100:.2f}%")
+
+            fig=go.Figure()
+            for i in range(min(50,len(curves))):
+                fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
+            fig.update_layout(height=400,template="plotly_dark",
+                              xaxis_title="Trades",yaxis_title="Equity")
+            st.plotly_chart(fig,use_container_width=True)
