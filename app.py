@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timezone, timedelta
 
 # =====================================================
-# CONFIG — OPSI A PRO v3.3
+# CONFIG — OPSI A PRO v3.4
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -49,7 +49,7 @@ def now_wib():
     return datetime.now(timezone.utc).astimezone(WIB).strftime("%Y-%m-%d %H:%M WIB")
 
 # =====================================================
-# PRIORITY
+# PRIORITY BASE
 # =====================================================
 PAIR_PRIORITY = {
     "BCH-USDT": 5,
@@ -142,9 +142,19 @@ def accumulation_distribution(df):
     return (mfm*v).cumsum()
 
 def ad_phase(adl, lookback=10):
+    if len(adl) < lookback + 1:
+        return "NETRAL"
+
     slope = adl.iloc[-1] - adl.iloc[-lookback]
-    if slope > 0: return "AKUMULASI"
-    if slope < 0: return "DISTRIBUSI"
+    avg = adl.diff().rolling(lookback).mean().iloc[-1]
+    strength = slope / (abs(avg) + 1e-9)
+
+    if slope > 0:
+        if strength > 2:
+            return "AKUMULASI_KUAT"
+        return "AKUMULASI_LEMAH"
+    elif slope < 0:
+        return "DISTRIBUSI"
     return "NETRAL"
 
 # =====================================================
@@ -188,12 +198,22 @@ def render_chart(df,stl,adl,signal):
     fig.add_hline(y=signal["TP1"],line_dash="dot",line_color="orange",row=1)
     fig.add_hline(y=signal["TP2"],line_dash="dot",line_color="purple",row=1)
 
-    color={"AKUMULASI":"lime","DISTRIBUSI":"red","NETRAL":"gray"}[signal["Phase"]]
+    label_map = {
+        "AKUMULASI_KUAT": ("AKUMULASI KUAT 💪","lime"),
+        "AKUMULASI_LEMAH": ("AKUMULASI LEMAH 🟡","yellow"),
+        "DISTRIBUSI": ("DISTRIBUSI 🔴","red"),
+        "NETRAL": ("NETRAL ⚪","gray")
+    }
+
+    txt,color = label_map.get(signal["Phase"],("NETRAL","gray"))
     fig.add_annotation(
-        text=f"📊 {signal['Phase']}",
-        xref="paper",yref="paper",x=0.01,y=0.98,
-        showarrow=False,font=dict(size=16,color=color),
-        bgcolor="rgba(0,0,0,0.6)",bordercolor=color
+        text=f"📊 {txt}",
+        xref="paper",yref="paper",
+        x=0.01,y=0.98,
+        showarrow=False,
+        font=dict(size=16,color=color),
+        bgcolor="rgba(0,0,0,0.6)",
+        bordercolor=color
     )
 
     fig.update_layout(height=520,template="plotly_dark",xaxis_rangeslider_visible=False)
@@ -215,7 +235,7 @@ def check_signal(okx,symbol):
     adl=accumulation_distribution(df4h)
     phase=ad_phase(adl)
 
-    if trend.iloc[-1]!=1 or vo.iloc[-1]<VO_MIN or phase!="AKUMULASI":
+    if trend.iloc[-1]!=1 or vo.iloc[-1]<VO_MIN or phase not in ["AKUMULASI_KUAT","AKUMULASI_LEMAH"]:
         return None
 
     ema200=df1d.close.ewm(span=200).mean()
@@ -229,14 +249,18 @@ def check_signal(okx,symbol):
     if entry-sl<entry*0.002: return None
 
     risk=entry-sl
+    priority=PAIR_PRIORITY.get(symbol,3)
+    if phase=="AKUMULASI_KUAT":
+        priority=min(priority+1,5)
+
     signal={
         "Time":now_wib(),"Symbol":symbol,"Phase":phase,
         "Candle":detect_candle(df4h),
         "Entry":round(entry,8),"SL":round(sl,8),
         "TP1":round(entry+risk*TP1_R,8),
         "TP2":round(entry+risk*TP2_R,8),
-        "Priority":PAIR_PRIORITY.get(symbol,3),
-        "Rating":"⭐"*PAIR_PRIORITY.get(symbol,3),
+        "Priority":priority,
+        "Rating":"⭐"*priority,
         "Status":"OPEN"
     }
     return signal,df4h.tail(100),stl.tail(100),adl.tail(100)
@@ -244,8 +268,8 @@ def check_signal(okx,symbol):
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OPSI A PRO v3.3",layout="wide")
-st.title("🚀 OPSI A PRO v3.3 — AKUMULASI / DISTRIBUSI")
+st.set_page_config("OPSI A PRO v3.4",layout="wide")
+st.title("🚀 OPSI A PRO v3.4 — AKUMULASI KUAT / LEMAH")
 
 tab1,tab2=st.tabs(["📡 Live Signal","📜 Riwayat"])
 okx=get_okx()
