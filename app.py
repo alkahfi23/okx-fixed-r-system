@@ -48,7 +48,7 @@ def now_wib():
     return datetime.now(timezone.utc).astimezone(WIB).strftime("%Y-%m-%d %H:%M WIB")
 
 # =====================================================
-# PRIORITY BASE
+# PRIORITY
 # =====================================================
 PAIR_PRIORITY = {
     "BCH-USDT": 5,
@@ -93,7 +93,7 @@ def load_trade_results():
     return pd.read_csv(TRADE_RESULT_FILE)
 
 # =====================================================
-# AUTO UPDATE TRADE OUTCOME → R
+# AUTO UPDATE R FROM TP / SL
 # =====================================================
 def update_trade_outcomes(okx):
     history = load_signal_history()
@@ -107,9 +107,8 @@ def update_trade_outcomes(okx):
         if row["Status"] != "OPEN":
             continue
 
-        symbol = row["Symbol"]
         try:
-            price = okx.fetch_ticker(symbol)["last"]
+            price = okx.fetch_ticker(row["Symbol"])["last"]
         except:
             continue
 
@@ -117,14 +116,11 @@ def update_trade_outcomes(okx):
         status = None
 
         if price <= row["SL"]:
-            r = -1
-            status = "SL HIT"
+            r, status = -1, "SL HIT"
         elif price >= row["TP2"]:
-            r = TP2_R
-            status = "TP2 HIT"
+            r, status = TP2_R, "TP2 HIT"
         elif price >= row["TP1"]:
-            r = TP1_R
-            status = "TP1 HIT"
+            r, status = TP1_R, "TP1 HIT"
 
         if r is not None:
             history.at[i, "Status"] = status
@@ -132,7 +128,7 @@ def update_trade_outcomes(okx):
                 results,
                 pd.DataFrame([{
                     "Time": now_wib(),
-                    "Symbol": symbol,
+                    "Symbol": row["Symbol"],
                     "R": r
                 }])
             ], ignore_index=True)
@@ -164,15 +160,15 @@ def get_liquid_symbols(min_vol):
 # INDICATORS
 # =====================================================
 def supertrend(df, period, mult):
-    h,l,c=df.high,df.low,df.close
-    tr=pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-    atr=tr.ewm(span=period,adjust=False).mean()
-    hl2=(h+l)/2
-    upper=hl2+mult*atr
-    lower=hl2-mult*atr
+    h,l,c = df.high, df.low, df.close
+    tr = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+    atr = tr.ewm(span=period,adjust=False).mean()
+    hl2 = (h+l)/2
+    upper = hl2 + mult*atr
+    lower = hl2 - mult*atr
 
-    stl=pd.Series(index=df.index,dtype=float)
-    trend=pd.Series(index=df.index,dtype=int)
+    stl = pd.Series(index=df.index,dtype=float)
+    trend = pd.Series(index=df.index,dtype=int)
     trend.iloc[0]=1
     stl.iloc[0]=lower.iloc[0]
 
@@ -195,17 +191,17 @@ def accumulation_distribution(df):
     return (mfm*v).cumsum()
 
 def ad_phase(adl, lookback=10):
-    slope=adl.iloc[-1]-adl.iloc[-lookback]
-    avg=adl.diff().rolling(lookback).mean().iloc[-1]
-    strength=slope/(abs(avg)+1e-9)
-    if slope>0:
-        return "AKUMULASI_KUAT" if strength>2 else "AKUMULASI_LEMAH"
-    if slope<0:
+    slope = adl.iloc[-1] - adl.iloc[-lookback]
+    avg = adl.diff().rolling(lookback).mean().iloc[-1]
+    strength = slope / (abs(avg) + 1e-9)
+    if slope > 0:
+        return "AKUMULASI_KUAT" if strength > 2 else "AKUMULASI_LEMAH"
+    if slope < 0:
         return "DISTRIBUSI"
     return "NETRAL"
 
 # =====================================================
-# PRICE ACTION + SUPPORT
+# PRICE ACTION & SUPPORT
 # =====================================================
 def detect_candle(df):
     o,h,l,c=df.open,df.high,df.low,df.close
@@ -235,7 +231,8 @@ def find_support(df,lb):
 # SIGNAL CHECK
 # =====================================================
 def check_signal(okx,symbol):
-    if has_open_signal(symbol): return None
+    if has_open_signal(symbol):
+        return None
 
     df4h=pd.DataFrame(okx.fetch_ohlcv(symbol,ENTRY_TF,limit=LIMIT_4H),
         columns=["t","open","high","low","close","volume"])
@@ -256,14 +253,17 @@ def check_signal(okx,symbol):
 
     entry=df4h.close.iloc[-1]
     supports=[s for s in find_support(df1d,SR_LOOKBACK) if s<entry]
-    if not supports: return None
+    if not supports:
+        return None
 
     sl=max(supports)*(1-ZONE_BUFFER)
-    if entry-sl<entry*0.002: return None
+    if entry-sl<entry*0.002:
+        return None
 
     risk=entry-sl
     priority=PAIR_PRIORITY.get(symbol,3)
-    if phase=="AKUMULASI_KUAT": priority=min(priority+1,5)
+    if phase=="AKUMULASI_KUAT":
+        priority=min(priority+1,5)
 
     return {
         "Time":now_wib(),"Symbol":symbol,"Phase":phase,
@@ -276,39 +276,38 @@ def check_signal(okx,symbol):
     }
 
 # =====================================================
-# MONTE CARLO
+# CHART (ON-DEMAND)
 # =====================================================
-def monte_carlo(r_values,start=10000,risk=0.01,trades=300,sims=2000):
-    curves=[]
-    for _ in range(sims):
-        bal=start; eq=[bal]
-        for _ in range(trades):
-            r=np.random.choice(r_values)
-            bal+=bal*risk*r
-            eq.append(bal)
-        curves.append(eq)
-    curves=np.array(curves)
+def get_chart_data(okx, symbol):
+    df4h = pd.DataFrame(
+        okx.fetch_ohlcv(symbol, ENTRY_TF, limit=100),
+        columns=["t","open","high","low","close","volume"]
+    )
+    stl,_ = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
+    adl = accumulation_distribution(df4h)
+    return df4h, stl, adl
 
-    def max_dd(eq):
-        peak=np.maximum.accumulate(eq)
-        return ((eq-peak)/peak).min()
+def render_chart(df,stl,adl,signal):
+    fig=make_subplots(rows=2,cols=1,shared_xaxes=True,row_heights=[0.7,0.3])
+    fig.add_candlestick(x=df.index,open=df.open,high=df.high,low=df.low,close=df.close,row=1,col=1)
+    fig.add_trace(go.Scatter(x=df.index,y=stl,line=dict(color="lime"),name="Supertrend"),row=1,col=1)
+    fig.add_trace(go.Scatter(x=df.index,y=adl,line=dict(color="cyan"),name="A/D"),row=2,col=1)
 
-    return curves,{
-        "median_final":np.median(curves[:,-1]),
-        "worst_dd":min(max_dd(c) for c in curves),
-        "ruin":(curves[:,-1]<start*0.5).mean()
-    }
+    for k,c in [("Entry","cyan"),("SL","red"),("TP1","orange"),("TP2","purple")]:
+        fig.add_hline(y=signal[k],line_color=c,row=1)
+
+    fig.update_layout(height=520,template="plotly_dark",xaxis_rangeslider_visible=False)
+    return fig
 
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OPSI A PRO v3.6",layout="wide")
-st.title("🚀 OPSI A PRO v3.6 — AUTO R + MONTE CARLO")
+st.set_page_config("OPSI A PRO v3.6.1",layout="wide")
+st.title("🚀 OPSI A PRO v3.6.1 — PROGRESS + CHART FIX")
 
 tab1,tab2,tab3=st.tabs(["📡 Live Signal","📜 Riwayat","🎲 Monte Carlo"])
 okx=get_okx()
 
-# AUTO UPDATE OUTCOME
 update_trade_outcomes(okx)
 
 with tab1:
@@ -318,21 +317,18 @@ with tab1:
 
         progress = st.progress(0)
         status = st.empty()
-
         signals = []
 
-        for i, s in enumerate(symbols, start=1):
+        for i,s in enumerate(symbols,1):
             status.text(f"Scanning {s} ({i}/{total})")
-
             try:
-                sig = check_signal(okx, s)
+                sig = check_signal(okx,s)
                 if sig:
                     save_signal(sig)
                     signals.append(sig)
-            except Exception as e:
+            except:
                 pass
-
-            progress.progress(i / total)
+            progress.progress(i/total)
             time.sleep(RATE_LIMIT_DELAY)
 
         progress.empty()
@@ -340,7 +336,13 @@ with tab1:
 
         if signals:
             st.success(f"🔥 {len(signals)} SIGNAL DITEMUKAN")
-            st.dataframe(pd.DataFrame(signals), use_container_width=True)
+            st.dataframe(pd.DataFrame(signals),use_container_width=True)
+
+            for sig in signals:
+                with st.expander(f"📈 {sig['Symbol']} — Chart"):
+                    with st.spinner("Loading chart..."):
+                        dfc,stlc,adlc = get_chart_data(okx, sig["Symbol"])
+                        st.plotly_chart(render_chart(dfc,stlc,adlc,sig),use_container_width=True)
         else:
             st.warning("Tidak ada setup valid.")
 
@@ -355,11 +357,19 @@ with tab3:
         r=df_r["R"].values
         risk=st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
         trades=st.slider("Trades / Simulation",50,500,300)
+
         if st.button("Run Monte Carlo"):
-            curves,res=monte_carlo(r,risk=risk,trades=trades)
-            st.write(f"Median Final Balance: ${res['median_final']:,.0f}")
-            st.write(f"Worst Max DD: {res['worst_dd']*100:.1f}%")
-            st.write(f"Ruin Probability: {res['ruin']*100:.2f}%")
+            curves=[]
+            for _ in range(1000):
+                bal=10000; eq=[bal]
+                for _ in range(trades):
+                    bal+=bal*risk*np.random.choice(r)
+                    eq.append(bal)
+                curves.append(eq)
+            curves=np.array(curves)
+
+            st.write(f"Median Final Balance: ${np.median(curves[:,-1]):,.0f}")
+            st.write(f"Ruin Probability: {(curves[:,-1]<5000).mean()*100:.2f}%")
 
             fig=go.Figure()
             for i in range(min(50,len(curves))):
