@@ -93,6 +93,56 @@ def load_trade_results():
     return pd.read_csv(TRADE_RESULT_FILE)
 
 # =====================================================
+# AUTO UPDATE TRADE OUTCOME → R
+# =====================================================
+def update_trade_outcomes(okx):
+    history = load_signal_history()
+    if history.empty:
+        return
+
+    results = load_trade_results()
+    updated = False
+
+    for i, row in history.iterrows():
+        if row["Status"] != "OPEN":
+            continue
+
+        symbol = row["Symbol"]
+        try:
+            price = okx.fetch_ticker(symbol)["last"]
+        except:
+            continue
+
+        r = None
+        status = None
+
+        if price <= row["SL"]:
+            r = -1
+            status = "SL HIT"
+        elif price >= row["TP2"]:
+            r = TP2_R
+            status = "TP2 HIT"
+        elif price >= row["TP1"]:
+            r = TP1_R
+            status = "TP1 HIT"
+
+        if r is not None:
+            history.at[i, "Status"] = status
+            results = pd.concat([
+                results,
+                pd.DataFrame([{
+                    "Time": now_wib(),
+                    "Symbol": symbol,
+                    "R": r
+                }])
+            ], ignore_index=True)
+            updated = True
+
+    if updated:
+        history.to_csv(SIGNAL_LOG_FILE, index=False)
+        results.to_csv(TRADE_RESULT_FILE, index=False)
+
+# =====================================================
 # SYMBOL FETCH
 # =====================================================
 @st.cache_data(ttl=300)
@@ -148,7 +198,6 @@ def ad_phase(adl, lookback=10):
     slope=adl.iloc[-1]-adl.iloc[-lookback]
     avg=adl.diff().rolling(lookback).mean().iloc[-1]
     strength=slope/(abs(avg)+1e-9)
-
     if slope>0:
         return "AKUMULASI_KUAT" if strength>2 else "AKUMULASI_LEMAH"
     if slope<0:
@@ -156,7 +205,7 @@ def ad_phase(adl, lookback=10):
     return "NETRAL"
 
 # =====================================================
-# PRICE ACTION
+# PRICE ACTION + SUPPORT
 # =====================================================
 def detect_candle(df):
     o,h,l,c=df.open,df.high,df.low,df.close
@@ -181,34 +230,6 @@ def find_support(df,lb):
         if not filt or abs(s-filt[-1])/s>0.01:
             filt.append(s)
     return filt
-
-# =====================================================
-# CHART
-# =====================================================
-def render_chart(df,stl,adl,signal):
-    fig=make_subplots(rows=2,cols=1,shared_xaxes=True,row_heights=[0.7,0.3])
-    fig.add_candlestick(x=df.index,open=df.open,high=df.high,low=df.low,close=df.close,row=1,col=1)
-    fig.add_trace(go.Scatter(x=df.index,y=stl,line=dict(color="lime"),name="Supertrend"),row=1,col=1)
-    fig.add_trace(go.Scatter(x=df.index,y=adl,line=dict(color="cyan"),name="A/D"),row=2,col=1)
-
-    for k,c in [("Entry","cyan"),("SL","red"),("TP1","orange"),("TP2","purple")]:
-        fig.add_hline(y=signal[k],line_color=c,row=1)
-
-    label_map={
-        "AKUMULASI_KUAT":("AKUMULASI KUAT 💪","lime"),
-        "AKUMULASI_LEMAH":("AKUMULASI LEMAH 🟡","yellow"),
-        "DISTRIBUSI":("DISTRIBUSI 🔴","red"),
-        "NETRAL":("NETRAL ⚪","gray")
-    }
-    txt,color=label_map.get(signal["Phase"],("NETRAL","gray"))
-    fig.add_annotation(
-        text=f"📊 {txt}",
-        xref="paper",yref="paper",x=0.01,y=0.98,
-        showarrow=False,font=dict(size=16,color=color),
-        bgcolor="rgba(0,0,0,0.6)",bordercolor=color
-    )
-    fig.update_layout(height=520,template="plotly_dark",xaxis_rangeslider_visible=False)
-    return fig
 
 # =====================================================
 # SIGNAL CHECK
@@ -244,18 +265,18 @@ def check_signal(okx,symbol):
     priority=PAIR_PRIORITY.get(symbol,3)
     if phase=="AKUMULASI_KUAT": priority=min(priority+1,5)
 
-    signal={
+    return {
         "Time":now_wib(),"Symbol":symbol,"Phase":phase,
         "Candle":detect_candle(df4h),
         "Entry":round(entry,8),"SL":round(sl,8),
         "TP1":round(entry+risk*TP1_R,8),
         "TP2":round(entry+risk*TP2_R,8),
-        "Priority":priority,"Rating":"⭐"*priority,"Status":"OPEN"
+        "Priority":priority,"Rating":"⭐"*priority,
+        "Status":"OPEN"
     }
-    return signal,df4h.tail(100),stl.tail(100),adl.tail(100)
 
 # =====================================================
-# MONTE CARLO (PLOTLY)
+# MONTE CARLO
 # =====================================================
 def monte_carlo(r_values,start=10000,risk=0.01,trades=300,sims=2000):
     curves=[]
@@ -272,45 +293,54 @@ def monte_carlo(r_values,start=10000,risk=0.01,trades=300,sims=2000):
         peak=np.maximum.accumulate(eq)
         return ((eq-peak)/peak).min()
 
-    return curves, {
+    return curves,{
         "median_final":np.median(curves[:,-1]),
-        "worst_final":curves[:,-1].min(),
-        "best_final":curves[:,-1].max(),
-        "median_dd":np.median([max_dd(c) for c in curves]),
-        "worst_dd":min([max_dd(c) for c in curves]),
+        "worst_dd":min(max_dd(c) for c in curves),
         "ruin":(curves[:,-1]<start*0.5).mean()
     }
 
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OPSI A PRO v3.5.1",layout="wide")
-st.title("🚀 OPSI A PRO v3.5.1 — FULL SYSTEM")
+st.set_page_config("OPSI A PRO v3.6",layout="wide")
+st.title("🚀 OPSI A PRO v3.6 — AUTO R + MONTE CARLO")
 
 tab1,tab2,tab3=st.tabs(["📡 Live Signal","📜 Riwayat","🎲 Monte Carlo"])
 okx=get_okx()
 
+# AUTO UPDATE OUTCOME
+update_trade_outcomes(okx)
+
 with tab1:
     if st.button("🔍 Scan Live Signal"):
-        signals=[]
-        for s in get_liquid_symbols(MIN_USDT_VOLUME):
+        symbols = get_liquid_symbols(MIN_USDT_VOLUME)
+        total = len(symbols)
+
+        progress = st.progress(0)
+        status = st.empty()
+
+        signals = []
+
+        for i, s in enumerate(symbols, start=1):
+            status.text(f"Scanning {s} ({i}/{total})")
+
             try:
-                res=check_signal(okx,s)
-                if res:
-                    sig,dfc,stlc,adlc=res
+                sig = check_signal(okx, s)
+                if sig:
                     save_signal(sig)
-                    sig["_chart"]=(dfc,stlc,adlc)
                     signals.append(sig)
-            except: pass
+            except Exception as e:
+                pass
+
+            progress.progress(i / total)
             time.sleep(RATE_LIMIT_DELAY)
 
+        progress.empty()
+        status.empty()
+
         if signals:
-            df=pd.DataFrame(signals).drop(columns="_chart")
-            st.dataframe(df,use_container_width=True)
-            for sig in signals:
-                with st.expander(f"📈 {sig['Symbol']}"):
-                    dfc,stlc,adlc=sig["_chart"]
-                    st.plotly_chart(render_chart(dfc,stlc,adlc,sig),use_container_width=True)
+            st.success(f"🔥 {len(signals)} SIGNAL DITEMUKAN")
+            st.dataframe(pd.DataFrame(signals), use_container_width=True)
         else:
             st.warning("Tidak ada setup valid.")
 
@@ -318,18 +348,15 @@ with tab2:
     st.dataframe(load_signal_history(),use_container_width=True)
 
 with tab3:
-    st.subheader("🎲 Monte Carlo Risk Simulation")
     df_r=load_trade_results()
     if df_r.empty:
-        st.info("Isi trade_results.csv kolom R (contoh: -1, 0.8, 2)")
+        st.info("Belum ada trade closed.")
     else:
         r=df_r["R"].values
         risk=st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
         trades=st.slider("Trades / Simulation",50,500,300)
-
         if st.button("Run Monte Carlo"):
             curves,res=monte_carlo(r,risk=risk,trades=trades)
-
             st.write(f"Median Final Balance: ${res['median_final']:,.0f}")
             st.write(f"Worst Max DD: {res['worst_dd']*100:.1f}%")
             st.write(f"Ruin Probability: {res['ruin']*100:.2f}%")
@@ -337,6 +364,5 @@ with tab3:
             fig=go.Figure()
             for i in range(min(50,len(curves))):
                 fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
-            fig.update_layout(height=400,template="plotly_dark",
-                              xaxis_title="Trades",yaxis_title="Equity")
+            fig.update_layout(template="plotly_dark",height=400)
             st.plotly_chart(fig,use_container_width=True)
