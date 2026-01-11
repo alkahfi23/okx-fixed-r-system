@@ -5,12 +5,14 @@ import requests
 import time
 import os
 import random
+import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import matplotlib.pyplot as plt
 from datetime import datetime, timezone, timedelta
 
 # =====================================================
-# CONFIG — OPSI A PRO v3.4
+# CONFIG
 # =====================================================
 ENTRY_TF = "4h"
 SR_TF = "1d"
@@ -35,14 +37,12 @@ MAX_SCAN_SYMBOLS = 120
 TP1_R = 0.8
 TP2_R = 2.0
 
-# =====================================================
-# FILE PATH
-# =====================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIGNAL_LOG_FILE = os.path.join(BASE_DIR, "signal_history.csv")
+TRADE_RESULT_FILE = os.path.join(BASE_DIR, "trade_results.csv")
 
 # =====================================================
-# TIMEZONE WIB
+# TIMEZONE
 # =====================================================
 WIB = timezone(timedelta(hours=7))
 def now_wib():
@@ -59,14 +59,14 @@ PAIR_PRIORITY = {
 }
 
 # =====================================================
-# CCXT CACHE
+# CCXT
 # =====================================================
 @st.cache_resource
 def get_okx():
     return ccxt.okx({"enableRateLimit": True})
 
 # =====================================================
-# SIGNAL HISTORY
+# FILE HANDLERS
 # =====================================================
 def load_signal_history():
     if not os.path.exists(SIGNAL_LOG_FILE):
@@ -76,17 +76,22 @@ def load_signal_history():
             "Priority","Rating","Status"
         ])
         df.to_csv(SIGNAL_LOG_FILE, index=False)
-        return df
     return pd.read_csv(SIGNAL_LOG_FILE)
-
-def has_open_signal(symbol):
-    df = load_signal_history()
-    return ((df["Symbol"] == symbol) & (df["Status"] == "OPEN")).any()
 
 def save_signal(signal):
     df = load_signal_history()
     df = pd.concat([df, pd.DataFrame([signal])], ignore_index=True)
     df.to_csv(SIGNAL_LOG_FILE, index=False)
+
+def has_open_signal(symbol):
+    df = load_signal_history()
+    return ((df["Symbol"] == symbol) & (df["Status"] == "OPEN")).any()
+
+def load_trade_results():
+    if not os.path.exists(TRADE_RESULT_FILE):
+        df = pd.DataFrame(columns=["Time","Symbol","R"])
+        df.to_csv(TRADE_RESULT_FILE, index=False)
+    return pd.read_csv(TRADE_RESULT_FILE)
 
 # =====================================================
 # SYMBOL FETCH
@@ -110,16 +115,15 @@ def get_liquid_symbols(min_vol):
 # INDICATORS
 # =====================================================
 def supertrend(df, period, mult):
-    h,l,c = df.high, df.low, df.close
-    tr = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-    atr = tr.ewm(span=period, adjust=False).mean()
-    hl2 = (h+l)/2
-    upper = hl2 + mult*atr
-    lower = hl2 - mult*atr
+    h,l,c=df.high,df.low,df.close
+    tr=pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+    atr=tr.ewm(span=period,adjust=False).mean()
+    hl2=(h+l)/2
+    upper=hl2+mult*atr
+    lower=hl2-mult*atr
 
-    stl = pd.Series(index=df.index,dtype=float)
-    trend = pd.Series(index=df.index,dtype=int)
-
+    stl=pd.Series(index=df.index,dtype=float)
+    trend=pd.Series(index=df.index,dtype=int)
     trend.iloc[0]=1
     stl.iloc[0]=lower.iloc[0]
 
@@ -136,24 +140,19 @@ def volume_oscillator(v,f,s):
     return (v.ewm(span=f).mean()-v.ewm(span=s).mean())/v.ewm(span=s).mean()*100
 
 def accumulation_distribution(df):
-    h,l,c,v = df.high,df.low,df.close,df.volume
+    h,l,c,v=df.high,df.low,df.close,df.volume
     mfm=((c-l)-(h-c))/(h-l)
-    mfm=mfm.replace([float("inf"),-float("inf")],0).fillna(0)
+    mfm=mfm.replace([np.inf,-np.inf],0).fillna(0)
     return (mfm*v).cumsum()
 
 def ad_phase(adl, lookback=10):
-    if len(adl) < lookback + 1:
-        return "NETRAL"
+    slope=adl.iloc[-1]-adl.iloc[-lookback]
+    avg=adl.diff().rolling(lookback).mean().iloc[-1]
+    strength=slope/(abs(avg)+1e-9)
 
-    slope = adl.iloc[-1] - adl.iloc[-lookback]
-    avg = adl.diff().rolling(lookback).mean().iloc[-1]
-    strength = slope / (abs(avg) + 1e-9)
-
-    if slope > 0:
-        if strength > 2:
-            return "AKUMULASI_KUAT"
-        return "AKUMULASI_LEMAH"
-    elif slope < 0:
+    if slope>0:
+        return "AKUMULASI_KUAT" if strength>2 else "AKUMULASI_LEMAH"
+    if slope<0:
         return "DISTRIBUSI"
     return "NETRAL"
 
@@ -193,29 +192,22 @@ def render_chart(df,stl,adl,signal):
     fig.add_trace(go.Scatter(x=df.index,y=stl,line=dict(color="lime"),name="Supertrend"),row=1,col=1)
     fig.add_trace(go.Scatter(x=df.index,y=adl,line=dict(color="cyan"),name="A/D"),row=2,col=1)
 
-    fig.add_hline(y=signal["Entry"],line_dash="dot",line_color="cyan",row=1)
-    fig.add_hline(y=signal["SL"],line_dash="dash",line_color="red",row=1)
-    fig.add_hline(y=signal["TP1"],line_dash="dot",line_color="orange",row=1)
-    fig.add_hline(y=signal["TP2"],line_dash="dot",line_color="purple",row=1)
+    for k,c in [("Entry","cyan"),("SL","red"),("TP1","orange"),("TP2","purple")]:
+        fig.add_hline(y=signal[k],line_color=c,row=1)
 
-    label_map = {
-        "AKUMULASI_KUAT": ("AKUMULASI KUAT 💪","lime"),
-        "AKUMULASI_LEMAH": ("AKUMULASI LEMAH 🟡","yellow"),
-        "DISTRIBUSI": ("DISTRIBUSI 🔴","red"),
-        "NETRAL": ("NETRAL ⚪","gray")
+    label_map={
+        "AKUMULASI_KUAT":("AKUMULASI KUAT 💪","lime"),
+        "AKUMULASI_LEMAH":("AKUMULASI LEMAH 🟡","yellow"),
+        "DISTRIBUSI":("DISTRIBUSI 🔴","red"),
+        "NETRAL":("NETRAL ⚪","gray")
     }
-
-    txt,color = label_map.get(signal["Phase"],("NETRAL","gray"))
+    txt,color=label_map.get(signal["Phase"],("NETRAL","gray"))
     fig.add_annotation(
         text=f"📊 {txt}",
-        xref="paper",yref="paper",
-        x=0.01,y=0.98,
-        showarrow=False,
-        font=dict(size=16,color=color),
-        bgcolor="rgba(0,0,0,0.6)",
-        bordercolor=color
+        xref="paper",yref="paper",x=0.01,y=0.98,
+        showarrow=False,font=dict(size=16,color=color),
+        bgcolor="rgba(0,0,0,0.6)",bordercolor=color
     )
-
     fig.update_layout(height=520,template="plotly_dark",xaxis_rangeslider_visible=False)
     return fig
 
@@ -226,9 +218,9 @@ def check_signal(okx,symbol):
     if has_open_signal(symbol): return None
 
     df4h=pd.DataFrame(okx.fetch_ohlcv(symbol,ENTRY_TF,limit=LIMIT_4H),
-                      columns=["t","open","high","low","close","volume"])
+        columns=["t","open","high","low","close","volume"])
     df1d=pd.DataFrame(okx.fetch_ohlcv(symbol,SR_TF,limit=LIMIT_1D),
-                      columns=["t","open","high","low","close","volume"])
+        columns=["t","open","high","low","close","volume"])
 
     stl,trend=supertrend(df4h,ATR_PERIOD,MULTIPLIER)
     vo=volume_oscillator(df4h.volume,VO_FAST,VO_SLOW)
@@ -245,13 +237,13 @@ def check_signal(okx,symbol):
     entry=df4h.close.iloc[-1]
     supports=[s for s in find_support(df1d,SR_LOOKBACK) if s<entry]
     if not supports: return None
+
     sl=max(supports)*(1-ZONE_BUFFER)
     if entry-sl<entry*0.002: return None
 
     risk=entry-sl
     priority=PAIR_PRIORITY.get(symbol,3)
-    if phase=="AKUMULASI_KUAT":
-        priority=min(priority+1,5)
+    if phase=="AKUMULASI_KUAT": priority=min(priority+1,5)
 
     signal={
         "Time":now_wib(),"Symbol":symbol,"Phase":phase,
@@ -259,19 +251,45 @@ def check_signal(okx,symbol):
         "Entry":round(entry,8),"SL":round(sl,8),
         "TP1":round(entry+risk*TP1_R,8),
         "TP2":round(entry+risk*TP2_R,8),
-        "Priority":priority,
-        "Rating":"⭐"*priority,
-        "Status":"OPEN"
+        "Priority":priority,"Rating":"⭐"*priority,"Status":"OPEN"
     }
     return signal,df4h.tail(100),stl.tail(100),adl.tail(100)
 
 # =====================================================
+# MONTE CARLO
+# =====================================================
+def monte_carlo(r_values,start=10000,risk=0.01,trades=300,sims=2000):
+    curves=[]
+    for _ in range(sims):
+        bal=start; eq=[bal]
+        for _ in range(trades):
+            r=np.random.choice(r_values)
+            bal+=bal*risk*r
+            eq.append(bal)
+        curves.append(eq)
+    curves=np.array(curves)
+
+    def max_dd(eq):
+        peak=np.maximum.accumulate(eq)
+        return ((eq-peak)/peak).min()
+
+    return {
+        "curves":curves,
+        "median_final":np.median(curves[:,-1]),
+        "worst_final":curves[:,-1].min(),
+        "best_final":curves[:,-1].max(),
+        "median_dd":np.median([max_dd(c) for c in curves]),
+        "worst_dd":min([max_dd(c) for c in curves]),
+        "ruin":(curves[:,-1]<start*0.5).mean()
+    }
+
+# =====================================================
 # UI
 # =====================================================
-st.set_page_config("OPSI A PRO v3.4",layout="wide")
-st.title("🚀 OPSI A PRO v3.4 — AKUMULASI KUAT / LEMAH")
+st.set_page_config("OPSI A PRO v3.5",layout="wide")
+st.title("🚀 OPSI A PRO v3.5 — FULL SYSTEM")
 
-tab1,tab2=st.tabs(["📡 Live Signal","📜 Riwayat"])
+tab1,tab2,tab3=st.tabs(["📡 Live Signal","📜 Riwayat","🎲 Monte Carlo"])
 okx=get_okx()
 
 with tab1:
@@ -299,5 +317,24 @@ with tab1:
             st.warning("Tidak ada setup valid.")
 
 with tab2:
-    hist=load_signal_history().sort_values("Time",ascending=False)
-    st.dataframe(hist,use_container_width=True)
+    st.dataframe(load_signal_history(),use_container_width=True)
+
+with tab3:
+    st.subheader("🎲 Monte Carlo Risk Simulation")
+    df_r=load_trade_results()
+    if df_r.empty:
+        st.info("Isi trade_results.csv dengan kolom R (contoh: -1, 0.8, 2)")
+    else:
+        r=df_r["R"].values
+        risk=st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
+        trades=st.slider("Trades / Simulation",50,500,300)
+        if st.button("Run Monte Carlo"):
+            res=monte_carlo(r, risk=risk, trades=trades)
+            st.write(f"Median Final: ${res['median_final']:,.0f}")
+            st.write(f"Worst DD: {res['worst_dd']*100:.1f}%")
+            st.write(f"Ruin Prob: {res['ruin']*100:.2f}%")
+
+            fig,ax=plt.subplots()
+            for i in range(50):
+                ax.plot(res["curves"][i],alpha=0.2)
+            st.pyplot(fig)
