@@ -5,6 +5,7 @@ import requests
 import time
 import os
 import random
+import plotly.graph_objects as go
 from datetime import datetime, timezone, timedelta
 
 # =====================================================
@@ -21,10 +22,11 @@ MULTIPLIER = 3.0
 
 VO_FAST = 14
 VO_SLOW = 28
-VO_MIN = 5  # stronger confirmation
+VO_MIN = 5
 
 SR_LOOKBACK = 5
 ZONE_BUFFER = 0.008
+
 MIN_USDT_VOLUME = 2_000_000
 RATE_LIMIT_DELAY = 0.15
 MAX_SCAN_SYMBOLS = 120
@@ -64,7 +66,7 @@ PAIR_PRIORITY = {
 }
 
 # =====================================================
-# CCXT INSTANCE (CACHE)
+# CCXT (CACHE)
 # =====================================================
 @st.cache_resource
 def get_okx():
@@ -86,8 +88,6 @@ def load_signal_history():
 
 def has_open_signal(symbol):
     df = load_signal_history()
-    if df.empty:
-        return False
     return ((df["Symbol"] == symbol) & (df["Status"] == "OPEN")).any()
 
 def save_signal(signal):
@@ -103,6 +103,7 @@ def get_liquid_symbols(min_vol):
     url = "https://www.okx.com/api/v5/market/tickers"
     r = requests.get(url, params={"instType": "SPOT"}, timeout=15)
     r.raise_for_status()
+
     symbols = [
         d["instId"] for d in r.json()["data"]
         if d["instId"].endswith("-USDT")
@@ -187,7 +188,44 @@ def find_support(df, lb):
     return filtered
 
 # =====================================================
-# SIGNAL CHECK — v3.2
+# CHART PREVIEW
+# =====================================================
+def render_chart(df, stl, signal):
+    fig = go.Figure()
+
+    fig.add_candlestick(
+        x=df.index,
+        open=df.open,
+        high=df.high,
+        low=df.low,
+        close=df.close,
+        name="Price"
+    )
+
+    fig.add_trace(go.Scatter(
+        x=df.index,
+        y=stl,
+        mode="lines",
+        name="Supertrend",
+        line=dict(color="lime", width=1)
+    ))
+
+    fig.add_hline(y=signal["Entry"], line_dash="dot", line_color="cyan", annotation_text="Entry")
+    fig.add_hline(y=signal["SL"], line_dash="dash", line_color="red", annotation_text="SL")
+    fig.add_hline(y=signal["TP1"], line_dash="dot", line_color="orange", annotation_text="TP1")
+    fig.add_hline(y=signal["TP2"], line_dash="dot", line_color="purple", annotation_text="TP2")
+
+    fig.update_layout(
+        height=450,
+        template="plotly_dark",
+        margin=dict(l=20, r=20, t=30, b=20),
+        xaxis_rangeslider_visible=False
+    )
+
+    return fig
+
+# =====================================================
+# SIGNAL CHECK
 # =====================================================
 def check_signal(okx, symbol):
     if has_open_signal(symbol):
@@ -229,7 +267,7 @@ def check_signal(okx, symbol):
 
     priority = PAIR_PRIORITY.get(symbol, 3)
 
-    return {
+    signal = {
         "Time": now_wib(),
         "Symbol": symbol,
         "Candle": candle,
@@ -242,11 +280,13 @@ def check_signal(okx, symbol):
         "Status": "OPEN"
     }
 
+    return signal, df4h.tail(100), stl.tail(100)
+
 # =====================================================
 # UI
 # =====================================================
 st.set_page_config("OPSI A PRO v3.2 — LIVE (WIB)", layout="wide")
-st.title("🚀 OPSI A PRO v3.2 — LIVE SIGNAL + HISTORY")
+st.title("🚀 OPSI A PRO v3.2 — LIVE SIGNAL + CHART PREVIEW")
 
 tab1, tab2 = st.tabs(["📡 Live Signal", "📜 Riwayat Sinyal"])
 okx = get_okx()
@@ -259,18 +299,27 @@ with tab1:
         with st.spinner("Scanning market..."):
             for s in symbols:
                 try:
-                    sig = check_signal(okx, s)
-                    if sig:
+                    result = check_signal(okx, s)
+                    if result:
+                        sig, df_chart, stl_chart = result
                         save_signal(sig)
+                        sig["_chart"] = (df_chart, stl_chart)
                         signals.append(sig)
                 except Exception as e:
                     st.write(f"{s} error → {e}")
                 time.sleep(RATE_LIMIT_DELAY)
 
         if signals:
-            df = pd.DataFrame(signals).sort_values("Priority", ascending=False)
+            df = pd.DataFrame(signals).drop(columns=["_chart"])
+            df = df.sort_values("Priority", ascending=False)
             st.success(f"🔥 {len(df)} SIGNAL AKTIF")
             st.dataframe(df, use_container_width=True)
+
+            for sig in signals:
+                with st.expander(f"📈 {sig['Symbol']} — Chart Preview"):
+                    dfc, stlc = sig["_chart"]
+                    fig = render_chart(dfc, stlc, sig)
+                    st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("Tidak ada setup valid.")
 
