@@ -5,10 +5,15 @@ import requests
 import time
 import os
 import random
+import json
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timezone, timedelta
+
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaInMemoryUpload
 
 # =====================================================
 # CONFIG
@@ -33,11 +38,10 @@ MIN_USDT_VOLUME = 2_000_000
 RATE_LIMIT_DELAY = 0.15
 MAX_SCAN_SYMBOLS = 120
 
-TP1_R = 0.8
-TP2_R = 2.0
-TP1_PARTIAL_R = 0.5     # R yang dicatat saat TP1
-TP2_FINAL_R   = 1.5     # R tambahan saat TP2
-
+# ---- R ACCOUNTING (REALISTIC)
+TP1_PARTIAL_R = 0.5     # partial exit
+TP2_FINAL_R   = 1.5     # final exit
+# total max = 2.0R
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIGNAL_LOG_FILE = os.path.join(BASE_DIR, "signal_history.csv")
@@ -51,21 +55,66 @@ def now_wib():
     return datetime.now(timezone.utc).astimezone(WIB).strftime("%Y-%m-%d %H:%M WIB")
 
 # =====================================================
-# PRIORITY
+# GOOGLE DRIVE (SERVICE ACCOUNT)
 # =====================================================
-PAIR_PRIORITY = {
-    "BCH-USDT": 5,
-    "WLFI-USDT": 4,
-    "ZEC-USDT": 3,
-    "PEPE-USDT": 2
-}
+def get_drive_service():
+    raw = os.getenv("GDRIVE_SERVICE_JSON")
+    if not raw:
+        return None
+    info = json.loads(raw)
+    creds = Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return build("drive", "v3", credentials=creds)
+
+def backup_csv_to_gdrive(df, filename):
+    service = get_drive_service()
+    folder_id = os.getenv("GDRIVE_FOLDER_ID")
+    if not service or not folder_id:
+        return
+
+    query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+    res = service.files().list(q=query, fields="files(id)").execute()
+    files = res.get("files", [])
+
+    data = df.to_csv(index=False).encode("utf-8")
+    media = MediaInMemoryUpload(data, mimetype="text/csv", resumable=False)
+
+    if files:
+        service.files().update(
+            fileId=files[0]["id"],
+            media_body=media
+        ).execute()
+    else:
+        service.files().create(
+            body={"name": filename, "parents": [folder_id]},
+            media_body=media
+        ).execute()
+
+def restore_csv_from_gdrive(filename, local_path):
+    service = get_drive_service()
+    folder_id = os.getenv("GDRIVE_FOLDER_ID")
+    if not service or not folder_id:
+        return
+
+    query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+    res = service.files().list(q=query, fields="files(id)").execute()
+    files = res.get("files", [])
+
+    if not files:
+        return
+
+    file_id = files[0]["id"]
+    content = service.files().get_media(fileId=file_id).execute()
+    with open(local_path, "wb") as f:
+        f.write(content)
 
 # =====================================================
-# CCXT
+# RESTORE DATA AT START (ANTI HILANG)
 # =====================================================
-@st.cache_resource
-def get_okx():
-    return ccxt.okx({"enableRateLimit": True})
+restore_csv_from_gdrive("signal_history.csv", SIGNAL_LOG_FILE)
+restore_csv_from_gdrive("trade_results.csv", TRADE_RESULT_FILE)
 
 # =====================================================
 # FILE HANDLERS
@@ -82,8 +131,12 @@ def load_signal_history():
 
 def save_signal(signal):
     df = load_signal_history()
+    # anti duplikat OPEN
+    if ((df["Symbol"] == signal["Symbol"]) & (df["Status"] == "OPEN")).any():
+        return
     df = pd.concat([df, pd.DataFrame([signal])], ignore_index=True)
     df.to_csv(SIGNAL_LOG_FILE, index=False)
+    backup_csv_to_gdrive(df, "signal_history.csv")
 
 def has_open_signal(symbol):
     df = load_signal_history()
@@ -96,7 +149,14 @@ def load_trade_results():
     return pd.read_csv(TRADE_RESULT_FILE)
 
 # =====================================================
-# AUTO UPDATE R FROM TP / SL
+# CCXT
+# =====================================================
+@st.cache_resource
+def get_okx():
+    return ccxt.okx({"enableRateLimit": True})
+
+# =====================================================
+# UPDATE TRADE OUTCOMES (REALISTIC)
 # =====================================================
 def update_trade_outcomes(okx):
     history = load_signal_history()
@@ -107,9 +167,8 @@ def update_trade_outcomes(okx):
     updated = False
 
     for i, row in history.iterrows():
-
-        # trade sudah final → skip
-        if row["Status"] in ["SL HIT", "TP2 HIT"]:
+        # final states
+        if row["Status"] in ["SL HIT", "TP2 HIT", "BE HIT"]:
             continue
 
         try:
@@ -120,36 +179,24 @@ def update_trade_outcomes(okx):
         r = None
         status = None
 
-        # =========================
-        # CASE 1 — SL SEBELUM TP1
-        # =========================
+        # SL before TP1
         if row["Status"] == "OPEN" and price <= row["SL"]:
             r, status = -1.0, "SL HIT"
 
-        # =========================
-        # CASE 2 — TP1 HIT (PARTIAL)
-        # =========================
+        # TP1 partial
         elif row["Status"] == "OPEN" and price >= row["TP1"]:
             r, status = TP1_PARTIAL_R, "TP1 HIT"
 
-        # =========================
-        # CASE 3 — SL SETELAH TP1 → BE
-        # =========================
+        # BE after TP1
         elif row["Status"] == "TP1 HIT" and price <= row["Entry"]:
             r, status = 0.0, "BE HIT"
 
-        # =========================
-        # CASE 4 — TP2 HIT (FINAL EXIT)
-        # =========================
+        # TP2 final
         elif row["Status"] == "TP1 HIT" and price >= row["TP2"]:
             r, status = TP2_FINAL_R, "TP2 HIT"
 
-        # =========================
-        # APPLY UPDATE
-        # =========================
         if r is not None:
             history.at[i, "Status"] = status
-
             results = pd.concat([
                 results,
                 pd.DataFrame([{
@@ -158,15 +205,16 @@ def update_trade_outcomes(okx):
                     "R": r
                 }])
             ], ignore_index=True)
-
             updated = True
 
     if updated:
         history.to_csv(SIGNAL_LOG_FILE, index=False)
         results.to_csv(TRADE_RESULT_FILE, index=False)
+        backup_csv_to_gdrive(history, "signal_history.csv")
+        backup_csv_to_gdrive(results, "trade_results.csv")
 
 # =====================================================
-# SYMBOL FETCH
+# MARKET SYMBOLS
 # =====================================================
 @st.cache_data(ttl=300)
 def get_liquid_symbols(min_vol):
@@ -288,22 +336,20 @@ def check_signal(okx,symbol):
         return None
 
     risk=entry-sl
-    priority=PAIR_PRIORITY.get(symbol,3)
-    if phase=="AKUMULASI_KUAT":
-        priority=min(priority+1,5)
+    priority=4 if phase=="AKUMULASI_KUAT" else 3
 
     return {
         "Time":now_wib(),"Symbol":symbol,"Phase":phase,
         "Candle":detect_candle(df4h),
         "Entry":round(entry,8),"SL":round(sl,8),
-        "TP1":round(entry+risk*TP1_R,8),
-        "TP2":round(entry+risk*TP2_R,8),
+        "TP1":round(entry+risk*0.8,8),
+        "TP2":round(entry+risk*2.0,8),
         "Priority":priority,"Rating":"⭐"*priority,
         "Status":"OPEN"
     }
 
 # =====================================================
-# CHART (ON-DEMAND)
+# CHART
 # =====================================================
 def get_chart_data(okx, symbol):
     df4h = pd.DataFrame(
@@ -319,10 +365,8 @@ def render_chart(df,stl,adl,signal):
     fig.add_candlestick(x=df.index,open=df.open,high=df.high,low=df.low,close=df.close,row=1,col=1)
     fig.add_trace(go.Scatter(x=df.index,y=stl,line=dict(color="lime"),name="Supertrend"),row=1,col=1)
     fig.add_trace(go.Scatter(x=df.index,y=adl,line=dict(color="cyan"),name="A/D"),row=2,col=1)
-
     for k,c in [("Entry","cyan"),("SL","red"),("TP1","orange"),("TP2","purple")]:
         fig.add_hline(y=signal[k],line_color=c,row=1)
-
     fig.update_layout(height=520,template="plotly_dark",xaxis_rangeslider_visible=False)
     return fig
 
@@ -331,23 +375,21 @@ def render_chart(df,stl,adl,signal):
 # =====================================================
 st.set_page_config("OPSI A PRO v3.6.1",layout="wide")
 st.title("🚀 OPSI A PRO v3.6.1 — PROGRESS + CHART FIX")
-st.write("Drive Connected:", bool(os.getenv("GDRIVE_SERVICE_JSON")))
-tab1,tab2,tab3=st.tabs(["📡 Live Signal","📜 Riwayat","🎲 Monte Carlo"])
-okx=get_okx()
 
+okx=get_okx()
 update_trade_outcomes(okx)
+
+tab1,tab2,tab3=st.tabs(["📡 Live Signal","📜 Riwayat","🎲 Monte Carlo"])
 
 with tab1:
     if st.button("🔍 Scan Live Signal"):
         symbols = get_liquid_symbols(MIN_USDT_VOLUME)
-        total = len(symbols)
-
         progress = st.progress(0)
         status = st.empty()
         signals = []
 
         for i,s in enumerate(symbols,1):
-            status.text(f"Scanning {s} ({i}/{total})")
+            status.text(f"Scanning {s} ({i}/{len(symbols)})")
             try:
                 sig = check_signal(okx,s)
                 if sig:
@@ -355,53 +397,51 @@ with tab1:
                     signals.append(sig)
             except:
                 pass
-            progress.progress(i/total)
+            progress.progress(i/len(symbols))
             time.sleep(RATE_LIMIT_DELAY)
 
-        progress.empty()
-        status.empty()
+        progress.empty(); status.empty()
 
         if signals:
             st.success(f"🔥 {len(signals)} SIGNAL DITEMUKAN")
             st.dataframe(pd.DataFrame(signals),use_container_width=True)
-
             for sig in signals:
                 with st.expander(f"📈 {sig['Symbol']} — Chart"):
-                    with st.spinner("Loading chart..."):
-                        dfc,stlc,adlc = get_chart_data(okx, sig["Symbol"])
-                        st.plotly_chart(render_chart(dfc,stlc,adlc,sig),use_container_width=True)
+                    dfc,stlc,adlc = get_chart_data(okx, sig["Symbol"])
+                    st.plotly_chart(render_chart(dfc,stlc,adlc,sig),use_container_width=True)
         else:
             st.warning("Tidak ada setup valid.")
 
 with tab2:
     st.dataframe(load_signal_history(),use_container_width=True)
+    st.download_button(
+        "⬇️ Download Signal History",
+        load_signal_history().to_csv(index=False),
+        "signal_history.csv",
+        "text/csv"
+    )
 
 with tab3:
     df_r=load_trade_results()
-    if df_r.empty:
-        st.info("Belum ada trade closed.")
+    if len(df_r)<20:
+        st.warning("Data trade belum cukup untuk Monte Carlo (min 20).")
     else:
         r=df_r["R"].values
         risk=st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
         trades=st.slider("Trades / Simulation",50,500,300)
-
         if st.button("Run Monte Carlo"):
             curves=[]
-            for _ in range(1000):
+            for _ in range(500):
                 bal=10000; eq=[bal]
                 for _ in range(trades):
                     bal+=bal*risk*np.random.choice(r)
                     eq.append(bal)
                 curves.append(eq)
             curves=np.array(curves)
-
             st.write(f"Median Final Balance: ${np.median(curves[:,-1]):,.0f}")
             st.write(f"Ruin Probability: {(curves[:,-1]<5000).mean()*100:.2f}%")
-
             fig=go.Figure()
-            for i in range(min(50,len(curves))):
+            for i in range(min(30,len(curves))):
                 fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
             fig.update_layout(template="plotly_dark",height=400)
             st.plotly_chart(fig,use_container_width=True)
-
-
