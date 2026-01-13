@@ -331,7 +331,7 @@ def render_chart(df,stl,adl,signal):
 # =====================================================
 st.set_page_config("OPSI A PRO v3.6.1",layout="wide")
 st.title("🚀 OPSI A PRO v3.6.1 — PROGRESS + CHART FIX")
-
+st.write("Drive Connected:", bool(os.getenv("GDRIVE_SERVICE_JSON")))
 tab1,tab2,tab3=st.tabs(["📡 Live Signal","📜 Riwayat","🎲 Monte Carlo"])
 okx=get_okx()
 
@@ -403,4 +403,5 @@ with tab3:
                 fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
             fig.update_layout(template="plotly_dark",height=400)
             st.plotly_chart(fig,use_container_width=True)
+
 
