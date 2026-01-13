@@ -35,6 +35,9 @@ MAX_SCAN_SYMBOLS = 120
 
 TP1_R = 0.8
 TP2_R = 2.0
+TP1_PARTIAL_R = 0.5     # R yang dicatat saat TP1
+TP2_FINAL_R   = 1.5     # R tambahan saat TP2
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIGNAL_LOG_FILE = os.path.join(BASE_DIR, "signal_history.csv")
@@ -104,7 +107,9 @@ def update_trade_outcomes(okx):
     updated = False
 
     for i, row in history.iterrows():
-        if row["Status"] != "OPEN":
+
+        # trade sudah final → skip
+        if row["Status"] in ["SL HIT", "TP2 HIT"]:
             continue
 
         try:
@@ -115,15 +120,36 @@ def update_trade_outcomes(okx):
         r = None
         status = None
 
-        if price <= row["SL"]:
-            r, status = -1, "SL HIT"
-        elif price >= row["TP2"]:
-            r, status = TP2_R, "TP2 HIT"
-        elif price >= row["TP1"]:
-            r, status = TP1_R, "TP1 HIT"
+        # =========================
+        # CASE 1 — SL SEBELUM TP1
+        # =========================
+        if row["Status"] == "OPEN" and price <= row["SL"]:
+            r, status = -1.0, "SL HIT"
 
+        # =========================
+        # CASE 2 — TP1 HIT (PARTIAL)
+        # =========================
+        elif row["Status"] == "OPEN" and price >= row["TP1"]:
+            r, status = TP1_PARTIAL_R, "TP1 HIT"
+
+        # =========================
+        # CASE 3 — SL SETELAH TP1 → BE
+        # =========================
+        elif row["Status"] == "TP1 HIT" and price <= row["Entry"]:
+            r, status = 0.0, "BE HIT"
+
+        # =========================
+        # CASE 4 — TP2 HIT (FINAL EXIT)
+        # =========================
+        elif row["Status"] == "TP1 HIT" and price >= row["TP2"]:
+            r, status = TP2_FINAL_R, "TP2 HIT"
+
+        # =========================
+        # APPLY UPDATE
+        # =========================
         if r is not None:
             history.at[i, "Status"] = status
+
             results = pd.concat([
                 results,
                 pd.DataFrame([{
@@ -132,6 +158,7 @@ def update_trade_outcomes(okx):
                     "R": r
                 }])
             ], ignore_index=True)
+
             updated = True
 
     if updated:
@@ -376,3 +403,4 @@ with tab3:
                 fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
             fig.update_layout(template="plotly_dark",height=400)
             st.plotly_chart(fig,use_container_width=True)
+
