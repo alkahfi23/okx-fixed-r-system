@@ -72,20 +72,31 @@ def backup_csv(df, filename):
     if not service or not folder_id:
         return
 
-    q = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
-    res = service.files().list(q=q, fields="files(id)").execute()
-    files = res.get("files", [])
-
     data = df.to_csv(index=False).encode("utf-8")
     media = MediaInMemoryUpload(data, mimetype="text/csv")
 
-    if files:
-        service.files().update(fileId=files[0]["id"], media_body=media).execute()
-    else:
+    query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+    res = service.files().list(q=query, fields="files(id)").execute()
+    files = res.get("files", [])
+
+    try:
+        if files:
+            service.files().update(
+                fileId=files[0]["id"],
+                media_body=media
+            ).execute()
+        else:
+            service.files().create(
+                body={"name": filename, "parents": [folder_id]},
+                media_body=media
+            ).execute()
+    except Exception as e:
+        # fallback: create new file (anti 404)
         service.files().create(
             body={"name": filename, "parents": [folder_id]},
             media_body=media
         ).execute()
+
 
 def restore_csv(filename, path):
     service = get_drive_service()
@@ -371,3 +382,4 @@ with tab1:
 
 with tab2:
     st.dataframe(load_signal_history(), use_container_width=True)
+
