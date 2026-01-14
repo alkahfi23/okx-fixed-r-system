@@ -75,27 +75,21 @@ def backup_csv(df, filename):
     data = df.to_csv(index=False).encode("utf-8")
     media = MediaInMemoryUpload(data, mimetype="text/csv")
 
+    # HAPUS FILE LAMA (BY NAME)
     query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
     res = service.files().list(q=query, fields="files(id)").execute()
-    files = res.get("files", [])
+    for f in res.get("files", []):
+        try:
+            service.files().delete(fileId=f["id"]).execute()
+        except:
+            pass
 
-    try:
-        if files:
-            service.files().update(
-                fileId=files[0]["id"],
-                media_body=media
-            ).execute()
-        else:
-            service.files().create(
-                body={"name": filename, "parents": [folder_id]},
-                media_body=media
-            ).execute()
-    except Exception as e:
-        # fallback: create new file (anti 404)
-        service.files().create(
-            body={"name": filename, "parents": [folder_id]},
-            media_body=media
-        ).execute()
+    # CREATE FILE BARU (AMAN)
+    service.files().create(
+        body={"name": filename, "parents": [folder_id]},
+        media_body=media
+    ).execute()
+
 
 
 def restore_csv(filename, path):
@@ -348,22 +342,35 @@ tab1, tab2 = st.tabs(["📡 Live Scan","📜 Riwayat"])
 with tab1:
     if st.button("🔍 Scan Live Signal"):
         st.session_state.scan_results = []
+
         symbols = get_liquid_symbols(MIN_USDT_VOLUME)
         progress = st.progress(0)
+        status = st.empty()
 
-        for i,s in enumerate(symbols,1):
+        for i, s in enumerate(symbols, 1):
+            status.text(f"Scanning {s} ({i}/{len(symbols)})")
             try:
-                sig = check_signal(okx,s)
+                sig = check_signal(okx, s)
                 if sig:
                     save_signal(sig)
                     st.session_state.scan_results.append(sig)
             except Exception as e:
                 st.write(f"{s} error → {e}")
-            progress.progress(i/len(symbols))
+
+            progress.progress(i / len(symbols))
             time.sleep(RATE_LIMIT_DELAY)
 
+        # 🔽 INI POSISI YANG BENAR
         progress.empty()
+        status.empty()
 
+        # ✅ BACKUP SEKALI (ANTI 404)
+        backup_csv(load_signal_history(), "signal_history.csv")
+        backup_csv(load_trade_results(), "trade_results.csv")
+
+        # ==========================
+        # DISPLAY RESULT
+        # ==========================
         if st.session_state.scan_results:
             st.success(f"🔥 {len(st.session_state.scan_results)} NEW SIGNAL")
             df_new = pd.DataFrame(st.session_state.scan_results)
@@ -371,15 +378,15 @@ with tab1:
 
             for sig in st.session_state.scan_results:
                 with st.expander(f"📈 {sig['Symbol']} — Chart"):
-                    with st.spinner("Loading chart..."):
-                        dfc, stlc, adlc = get_chart_data(okx, sig["Symbol"])
-                        st.plotly_chart(
-                            render_chart(dfc, stlc, adlc, sig),
-                            use_container_width=True
-                        )
+                    dfc, stlc, adlc = get_chart_data(okx, sig["Symbol"])
+                    st.plotly_chart(
+                        render_chart(dfc, stlc, adlc, sig),
+                        use_container_width=True
+                    )
         else:
             st.warning("Tidak ada setup valid.")
 
 with tab2:
     st.dataframe(load_signal_history(), use_container_width=True)
+
 
