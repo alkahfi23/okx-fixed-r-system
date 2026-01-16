@@ -1,6 +1,8 @@
-# =====================================================
-# OPSI A PRO — FINAL PRODUCTION (WITH MONTE CARLO)
-# =====================================================
+# ==============================
+# OPSI A PRO — FINAL PRODUCTION
+# ==============================
+
+DEBUG_LOG = []
 
 import streamlit as st
 import ccxt
@@ -14,17 +16,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timezone, timedelta
 
-# =====================================================
-# GLOBAL DEBUG
-# =====================================================
-DEBUG_LOG = []
-
-# =====================================================
-# CONFIG
-# =====================================================
+# ================= CONFIG =================
 ENTRY_TF = "4h"
-LIMIT_4H = 200
+SR_TF = "1d"
 
+LIMIT_4H = 200
 ATR_PERIOD = 10
 MULTIPLIER = 3.0
 
@@ -48,16 +44,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIGNAL_LOG_FILE = os.path.join(BASE_DIR, "signal_history.csv")
 TRADE_RESULT_FILE = os.path.join(BASE_DIR, "trade_results.csv")
 
-# =====================================================
-# TIMEZONE
-# =====================================================
+# ================= TIME =================
 WIB = timezone(timedelta(hours=7))
 def now_wib():
     return datetime.now(timezone.utc).astimezone(WIB).strftime("%Y-%m-%d %H:%M WIB")
 
-# =====================================================
-# EXCHANGES
-# =====================================================
+# ================= EXCHANGE =================
 @st.cache_resource
 def get_okx():
     return ccxt.okx({"enableRateLimit": True})
@@ -66,9 +58,12 @@ def get_okx():
 def get_bitget():
     return ccxt.bitget({"enableRateLimit": True})
 
-# =====================================================
-# FILE HANDLER
-# =====================================================
+@st.cache_resource
+def get_bitget_markets():
+    ex = get_bitget()
+    return set(ex.load_markets().keys())
+
+# ================= FILE =================
 def load_signal_history():
     if not os.path.exists(SIGNAL_LOG_FILE):
         df = pd.DataFrame(columns=[
@@ -94,36 +89,23 @@ def load_trade_results():
         )
     return pd.read_csv(TRADE_RESULT_FILE)
 
-# =====================================================
-# EXPIRE NEW LABEL
-# =====================================================
+# ================= EXPIRE NEW =================
 def expire_new():
     df = load_signal_history()
-    if df.empty:
-        return
-
     now = datetime.now(timezone.utc)
-    changed = False
-
     for i,row in df.iterrows():
-        if row["Label"] != "NEW":
-            continue
-        try:
-            created = datetime.fromisoformat(row["CreatedAt"])
-            if now - created > timedelta(hours=NEW_EXPIRE_HOURS):
-                df.at[i,"Label"] = ""
-                changed = True
-        except:
-            pass
-
-    if changed:
-        df.to_csv(SIGNAL_LOG_FILE, index=False)
+        if row["Label"] == "NEW":
+            try:
+                created = datetime.fromisoformat(row["CreatedAt"])
+                if now - created > timedelta(hours=NEW_EXPIRE_HOURS):
+                    df.at[i,"Label"] = ""
+            except:
+                pass
+    df.to_csv(SIGNAL_LOG_FILE, index=False)
 
 expire_new()
 
-# =====================================================
-# SYMBOL SOURCES
-# =====================================================
+# ================= SYMBOL SOURCES =================
 @st.cache_data(ttl=300)
 def get_okx_symbols(min_vol):
     r = requests.get(
@@ -147,51 +129,56 @@ def get_bitget_symbols(min_vol):
     )
     r.raise_for_status()
 
+    valid = get_bitget_markets()
     symbols = []
 
     for d in r.json().get("data", []):
         try:
-            symbol = d.get("symbol")
-            if not symbol or not symbol.endswith("USDT"):
+            raw = d.get("symbol")  # LINKUSDT
+            if not raw or not raw.endswith("USDT"):
                 continue
 
-            # ✅ FIELD RESMI BITGET
             vol = float(d.get("usdtVolume", 0))
+            if vol < min_vol:
+                continue
 
-            if vol >= min_vol:
-                # ubah LINKUSDT → LINK-USDT (ccxt format)
-                symbol = symbol.replace("USDT", "-USDT")
-                symbols.append((symbol, "BITGET"))
+            symbol = raw.replace("USDT", "-USDT")
+            if symbol not in valid:
+                DEBUG_LOG.append({
+                    "Symbol": symbol,
+                    "Source": "BITGET",
+                    "Reason": "Not in ccxt spot market"
+                })
+                continue
 
-        except Exception as e:
+            symbols.append((symbol, "BITGET"))
+        except:
             continue
 
     return symbols
 
 def get_all_symbols(min_vol):
-    merged={}
+    merged = {}
     for s,src in get_okx_symbols(min_vol):
-        merged[s]=src
+        merged[s] = src
     for s,src in get_bitget_symbols(min_vol):
-        merged.setdefault(s,src)
-
-    items=list(merged.items())
+        if s not in merged:
+            merged[s] = src
+    items = list(merged.items())
     random.shuffle(items)
     return items[:MAX_SCAN_SYMBOLS]
 
-# =====================================================
-# INDICATORS
-# =====================================================
+# ================= INDICATORS =================
 def supertrend(df, period, mult):
-    h,l,c=df.high,df.low,df.close
-    tr=pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-    atr=tr.ewm(span=period,adjust=False).mean()
-    hl2=(h+l)/2
-    upper=hl2+mult*atr
-    lower=hl2-mult*atr
+    h,l,c = df.high, df.low, df.close
+    tr = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+    atr = tr.ewm(span=period,adjust=False).mean()
+    hl2 = (h+l)/2
+    upper = hl2 + mult*atr
+    lower = hl2 - mult*atr
 
-    stl=pd.Series(index=df.index,dtype=float)
-    trend=pd.Series(index=df.index,dtype=int)
+    stl = pd.Series(index=df.index,dtype=float)
+    trend = pd.Series(index=df.index,dtype=int)
     trend.iloc[0]=1
     stl.iloc[0]=lower.iloc[0]
 
@@ -213,62 +200,60 @@ def accumulation_distribution(df):
     mfm=mfm.replace([np.inf,-np.inf],0).fillna(0)
     return (mfm*v).cumsum()
 
-def find_support(df, lb):
-    raw=[]
+def find_support(df,lb):
+    levels=[]
     for i in range(lb,len(df)-lb):
         if df.low.iloc[i]==min(df.low.iloc[i-lb:i+lb+1]):
-            raw.append(df.low.iloc[i])
-    raw=sorted(set(raw))
-    out=[]
-    for s in raw:
-        if not out or abs(s-out[-1])/s>0.01:
-            out.append(s)
-    return out
+            levels.append(df.low.iloc[i])
+    levels=sorted(set(levels))
+    clean=[]
+    for s in levels:
+        if not clean or abs(s-clean[-1])/s>0.01:
+            clean.append(s)
+    return clean
 
-# =====================================================
-# SIGNAL LOGIC (SCORE BASED)
-# =====================================================
-def check_signal(exchange, symbol, source):
+# ================= SIGNAL =================
+def check_signal(ex, symbol, source):
     try:
-        df=pd.DataFrame(
-            exchange.fetch_ohlcv(symbol,ENTRY_TF,limit=LIMIT_4H),
+        df = pd.DataFrame(
+            ex.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
             columns=["t","open","high","low","close","volume"]
         )
 
-        if len(df)<50:
-            DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":"OHLCV kurang"})
-            return None
+        stl,trend = supertrend(df,ATR_PERIOD,MULTIPLIER)
+        vo = volume_oscillator(df.volume,VO_FAST,VO_SLOW)
+        adl = accumulation_distribution(df)
 
-        stl,trend=supertrend(df,ATR_PERIOD,MULTIPLIER)
-        vo=volume_oscillator(df.volume,VO_FAST,VO_SLOW)
-        adl=accumulation_distribution(df)
-
-        score=0
+        score = 0
         if trend.iloc[-1]==1: score+=3
-        else:
-            DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":"Trend bearish"})
-            return None
-
-        if vo.iloc[-1]>=VO_MIN: score+=2
-        else:
-            DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":"Volume lemah"})
-            return None
-
+        if vo.iloc[-1]>VO_MIN: score+=2
         if adl.iloc[-1]>adl.iloc[-10]: score+=2
 
-        entry=df.close.iloc[-1]
-        supports=[s for s in find_support(df,SR_LOOKBACK) if s<entry]
+        if score < 5:
+            DEBUG_LOG.append({
+                "Symbol":symbol,
+                "Source":source,
+                "Reason":"Score < 5"
+            })
+            return None
+
+        entry = df.close.iloc[-1]
+        supports = [s for s in find_support(df,SR_LOOKBACK) if s < entry]
         if not supports:
-            DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":"No support"})
+            DEBUG_LOG.append({
+                "Symbol":symbol,
+                "Source":source,
+                "Reason":"No support"
+            })
             return None
 
-        sl=max(supports)*(1-ZONE_BUFFER)
-        risk=entry-sl
-        if risk<=entry*0.002:
-            DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":"Risk kecil"})
+        sl = max(supports)*(1-ZONE_BUFFER)
+        risk = entry-sl
+        if risk < entry*0.002:
             return None
 
-        phase="AKUMULASI_KUAT" if score>=6 else "AKUMULASI_LEMAH"
+        phase = "AKUMULASI_KUAT" if score>=6 else "AKUMULASI_LEMAH"
+        rating = "⭐"*score
 
         return {
             "Time":now_wib(),
@@ -281,21 +266,26 @@ def check_signal(exchange, symbol, source):
             "SL":round(sl,6),
             "TP1":round(entry+risk*TP1_R,6),
             "TP2":round(entry+risk*TP2_R,6),
-            "Rating":"⭐"*score,
+            "Rating":rating,
             "Status":"OPEN",
             "Label":"NEW"
         }
 
     except Exception as e:
-        DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":str(e)})
+        DEBUG_LOG.append({
+            "Symbol":symbol,
+            "Source":source,
+            "Reason":str(e)
+        })
         return None
 
-# =====================================================
-# CHART
-# =====================================================
+# ================= CHART =================
 def render_chart(df,stl,adl,sig):
     fig=make_subplots(rows=2,cols=1,shared_xaxes=True,row_heights=[0.7,0.3])
-    fig.add_candlestick(x=df.index,open=df.open,high=df.high,low=df.low,close=df.close,row=1,col=1)
+    fig.add_candlestick(
+        x=df.index,open=df.open,high=df.high,
+        low=df.low,close=df.close,row=1,col=1
+    )
     fig.add_trace(go.Scatter(x=df.index,y=stl,line=dict(color="lime")),row=1,col=1)
     fig.add_trace(go.Scatter(x=df.index,y=adl,line=dict(color="cyan")),row=2,col=1)
     for k,c in [("Entry","cyan"),("SL","red"),("TP1","orange"),("TP2","purple")]:
@@ -303,49 +293,43 @@ def render_chart(df,stl,adl,sig):
     fig.update_layout(template="plotly_dark",height=520,xaxis_rangeslider_visible=False)
     return fig
 
-# =====================================================
-# UI
-# =====================================================
-st.set_page_config("OPSI A PRO — FINAL",layout="wide")
+# ================= UI =================
+st.set_page_config("OPSI A PRO — FINAL", layout="wide")
 st.title("🚀 OPSI A PRO — FINAL PRODUCTION")
 
-with st.sidebar:
-    DEBUG_MODE=st.toggle("🧪 Debug Filter",value=False)
+okx = get_okx()
+bitget = get_bitget()
 
-okx=get_okx()
-bitget=get_bitget()
+tab1,tab2,tab3,tab4 = st.tabs(
+    ["📡 Live Scan","📜 Riwayat","🎲 Monte Carlo","🧪 Debug"]
+)
 
-tab1,tab2,tab3,tab4=st.tabs(["📡 Live Scan","📜 Riwayat","🎲 Monte Carlo","🧪 Debug"])
-
-# =====================================================
-# LIVE SCAN
-# =====================================================
 with tab1:
     if st.button("🔍 Scan Live Signal"):
         DEBUG_LOG.clear()
         found=[]
         symbols=get_all_symbols(MIN_USDT_VOLUME)
-        progress=st.progress(0)
+        bar=st.progress(0)
 
         for i,(sym,src) in enumerate(symbols,1):
-            ex=okx if src=="OKX" else bitget
-            sig=check_signal(ex,sym,src)
+            ex = okx if src=="OKX" else bitget
+            sig = check_signal(ex,sym,src)
             if sig:
                 save_signal(sig)
                 found.append(sig)
-            progress.progress(i/len(symbols))
+            bar.progress(i/len(symbols))
             time.sleep(RATE_LIMIT_DELAY)
 
-        progress.empty()
+        bar.empty()
 
         if found:
             df=pd.DataFrame(found).sort_values("Score",ascending=False)
-            st.success(f"🔥 {len(found)} SIGNAL DITEMUKAN")
+            st.success(f"🔥 {len(df)} SIGNAL DITEMUKAN")
             st.dataframe(df,use_container_width=True)
 
-            for sig in found:
+            for _,sig in df.iterrows():
                 with st.expander(f"📈 {sig['Symbol']} ({sig['Source']})"):
-                    ex=okx if sig["Source"]=="OKX" else bitget
+                    ex = okx if sig["Source"]=="OKX" else bitget
                     dfc=pd.DataFrame(
                         ex.fetch_ohlcv(sig["Symbol"],ENTRY_TF,limit=120),
                         columns=["t","open","high","low","close","volume"]
@@ -356,25 +340,18 @@ with tab1:
         else:
             st.warning("Tidak ada setup valid.")
 
-# =====================================================
-# HISTORY
-# =====================================================
 with tab2:
     df=load_signal_history().sort_values("Score",ascending=False)
     st.dataframe(df,use_container_width=True)
 
-# =====================================================
-# MONTE CARLO
-# =====================================================
 with tab3:
-    df=load_trade_results()
-    if len(df)<10:
-        st.warning("Data trade belum cukup (min 10).")
+    df_r=load_trade_results()
+    if len(df_r)<10:
+        st.warning("Data trade belum cukup.")
     else:
-        r=df["R"].values
+        r=df_r["R"].values
         risk=st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
         trades=st.slider("Trades / Simulation",50,500,300)
-
         if st.button("🎲 Run Monte Carlo"):
             curves=[]
             for _ in range(500):
@@ -384,24 +361,19 @@ with tab3:
                     eq.append(bal)
                 curves.append(eq)
             curves=np.array(curves)
-
             st.metric("Median Final Balance",f"${np.median(curves[:,-1]):,.0f}")
             st.metric("Risk of Ruin (<$5k)",f"{(curves[:,-1]<5000).mean()*100:.2f}%")
-
             fig=go.Figure()
             for i in range(min(30,len(curves))):
-                fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
+                fig.add_trace(go.Scatter(y=curves[i],opacity=0.3,showlegend=False))
             fig.update_layout(template="plotly_dark",height=400)
             st.plotly_chart(fig,use_container_width=True)
 
-# =====================================================
-# DEBUG
-# =====================================================
 with tab4:
-    if not DEBUG_LOG:
-        st.info("Belum ada debug. Jalankan scan.")
+    st.subheader("🧪 Debug Rejected Symbols")
+    if DEBUG_LOG:
+        df=pd.DataFrame(DEBUG_LOG)
+        st.dataframe(df,use_container_width=True)
+        st.bar_chart(df["Reason"].value_counts())
     else:
-        dfd=pd.DataFrame(DEBUG_LOG)
-        st.dataframe(dfd,use_container_width=True)
-        st.bar_chart(dfd["Reason"].value_counts())
-
+        st.info("Belum ada data debug.")
