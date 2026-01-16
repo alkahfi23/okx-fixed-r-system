@@ -129,12 +129,12 @@ def get_bitget_symbols(min_vol):
     )
     r.raise_for_status()
 
-    valid = get_bitget_markets()
+    valid = get_bitget_markets()  # ccxt markets
     symbols = []
 
     for d in r.json().get("data", []):
         try:
-            raw = d.get("symbol")  # LINKUSDT
+            raw = d.get("symbol")  # contoh: LINKUSDT
             if not raw or not raw.endswith("USDT"):
                 continue
 
@@ -142,7 +142,9 @@ def get_bitget_symbols(min_vol):
             if vol < min_vol:
                 continue
 
-            symbol = raw.replace("USDT", "-USDT")
+            base = raw.replace("USDT", "")
+            symbol = f"{base}/USDT"   # ⬅️ FIX UTAMA
+
             if symbol not in valid:
                 DEBUG_LOG.append({
                     "Symbol": symbol,
@@ -152,10 +154,16 @@ def get_bitget_symbols(min_vol):
                 continue
 
             symbols.append((symbol, "BITGET"))
-        except:
-            continue
+
+        except Exception as e:
+            DEBUG_LOG.append({
+                "Symbol": raw,
+                "Source": "BITGET",
+                "Reason": str(e)
+            })
 
     return symbols
+
 
 def get_all_symbols(min_vol):
     merged = {}
@@ -377,3 +385,4 @@ with tab4:
         st.bar_chart(df["Reason"].value_counts())
     else:
         st.info("Belum ada data debug.")
+
