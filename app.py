@@ -124,21 +124,48 @@ def expire_new_labels():
 # =====================================================
 @st.cache_data(ttl=300)
 def get_liquid_symbols(min_vol):
-    r = requests.get(
-        "https://www.okx.com/api/v5/market/tickers",
-        params={"instType": "SPOT"},
-        timeout=15
-    )
-    r.raise_for_status()
+    symbols = []
 
-    symbols = [
-        d["instId"]
-        for d in r.json()["data"]
-        if d["instId"].endswith("-USDT")
-        and float(d.get("volCcy24h",0)) >= min_vol
-    ]
+    # ---- OKX ----
+    try:
+        r1 = requests.get(
+            "https://www.okx.com/api/v5/market/tickers",
+            params={"instType": "SPOT"},
+            timeout=15
+        )
+        r1.raise_for_status()
 
+        for d in r1.json().get("data", []):
+            s = d.get("instId")
+            vol = float(d.get("volCcy24h", 0))
+            if s and s.endswith("-USDT") and vol >= min_vol:
+                symbols.append(s)
+    except Exception:
+        pass
+
+    # ---- BITGET ----
+    try:
+        r2 = requests.get(
+            "https://api.bitget.com/api/spot/v1/public/ticker",
+            timeout=15
+        )
+        r2.raise_for_status()
+
+        for d in r2.json().get("data", []):
+            s = d.get("symbol")
+            vol = float(d.get("baseVolume24h", 0))
+            # bitget uses symbol like "BTCUSDT", convert to "BTC-USDT"
+            inst = f"{s[:-4]}-USDT" if s.endswith("USDT") else None
+            if inst and vol >= min_vol:
+                symbols.append(inst)
+    except Exception:
+        pass
+
+    # ---- REMOVE DUPLICATES & RANDOMIZE ----
+    symbols = list(set(symbols))
     random.shuffle(symbols)
+
+    # ---- LIMIT THE LIST ----
     return symbols[:MAX_SCAN_SYMBOLS]
 
 # =====================================================
@@ -363,3 +390,4 @@ with tab3:
                 fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
             fig.update_layout(template="plotly_dark",height=400)
             st.plotly_chart(fig,use_container_width=True)
+
