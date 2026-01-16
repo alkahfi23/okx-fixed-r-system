@@ -1,5 +1,5 @@
 # =====================================================
-# OPSI A PRO — FINAL PRODUCTION
+# OPSI A PRO — FINAL PRODUCTION (WITH MONTE CARLO)
 # =====================================================
 
 import streamlit as st
@@ -46,6 +46,7 @@ NEW_EXPIRE_HOURS = 4
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIGNAL_LOG_FILE = os.path.join(BASE_DIR, "signal_history.csv")
+TRADE_RESULT_FILE = os.path.join(BASE_DIR, "trade_results.csv")
 
 # =====================================================
 # TIMEZONE
@@ -85,6 +86,13 @@ def save_signal(sig):
         return
     df = pd.concat([df, pd.DataFrame([sig])], ignore_index=True)
     df.to_csv(SIGNAL_LOG_FILE, index=False)
+
+def load_trade_results():
+    if not os.path.exists(TRADE_RESULT_FILE):
+        pd.DataFrame(columns=["Time","Symbol","R"]).to_csv(
+            TRADE_RESULT_FILE, index=False
+        )
+    return pd.read_csv(TRADE_RESULT_FILE)
 
 # =====================================================
 # EXPIRE NEW LABEL
@@ -139,27 +147,27 @@ def get_bitget_symbols(min_vol):
     )
     r.raise_for_status()
 
-    out = []
-    for d in r.json().get("data", []):
+    out=[]
+    for d in r.json().get("data",[]):
         try:
-            s = d.get("symbol")
+            s=d.get("symbol")
             if not s or not s.endswith("USDT"):
                 continue
-            vol = float(d.get("usdtVol", 0) or d.get("quoteVol", 0))
-            if vol >= min_vol:
-                out.append((s.replace("_","-"), "BITGET"))
+            vol=float(d.get("usdtVol",0) or d.get("quoteVol",0))
+            if vol>=min_vol:
+                out.append((s.replace("_","-"),"BITGET"))
         except:
             pass
     return out
 
 def get_all_symbols(min_vol):
-    merged = {}
+    merged={}
     for s,src in get_okx_symbols(min_vol):
-        merged[s] = src
+        merged[s]=src
     for s,src in get_bitget_symbols(min_vol):
-        merged.setdefault(s, src)
+        merged.setdefault(s,src)
 
-    items = list(merged.items())
+    items=list(merged.items())
     random.shuffle(items)
     return items[:MAX_SCAN_SYMBOLS]
 
@@ -167,15 +175,15 @@ def get_all_symbols(min_vol):
 # INDICATORS
 # =====================================================
 def supertrend(df, period, mult):
-    h,l,c = df.high, df.low, df.close
-    tr = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-    atr = tr.ewm(span=period,adjust=False).mean()
-    hl2 = (h+l)/2
-    upper = hl2 + mult*atr
-    lower = hl2 - mult*atr
+    h,l,c=df.high,df.low,df.close
+    tr=pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+    atr=tr.ewm(span=period,adjust=False).mean()
+    hl2=(h+l)/2
+    upper=hl2+mult*atr
+    lower=hl2-mult*atr
 
-    stl = pd.Series(index=df.index,dtype=float)
-    trend = pd.Series(index=df.index,dtype=int)
+    stl=pd.Series(index=df.index,dtype=float)
+    trend=pd.Series(index=df.index,dtype=int)
     trend.iloc[0]=1
     stl.iloc[0]=lower.iloc[0]
 
@@ -214,19 +222,20 @@ def find_support(df, lb):
 # =====================================================
 def check_signal(exchange, symbol, source):
     try:
-        df = pd.DataFrame(
-            exchange.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
+        df=pd.DataFrame(
+            exchange.fetch_ohlcv(symbol,ENTRY_TF,limit=LIMIT_4H),
             columns=["t","open","high","low","close","volume"]
         )
 
-        if len(df) < 50:
+        if len(df)<50:
             DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":"OHLCV kurang"})
             return None
 
-        stl,trend = supertrend(df, ATR_PERIOD, MULTIPLIER)
-        vo = volume_oscillator(df.volume, VO_FAST, VO_SLOW)
+        stl,trend=supertrend(df,ATR_PERIOD,MULTIPLIER)
+        vo=volume_oscillator(df.volume,VO_FAST,VO_SLOW)
+        adl=accumulation_distribution(df)
 
-        score = 0
+        score=0
         if trend.iloc[-1]==1: score+=3
         else:
             DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":"Trend bearish"})
@@ -237,37 +246,36 @@ def check_signal(exchange, symbol, source):
             DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":"Volume lemah"})
             return None
 
-        adl = accumulation_distribution(df)
         if adl.iloc[-1]>adl.iloc[-10]: score+=2
 
-        entry = df.close.iloc[-1]
-        supports = [s for s in find_support(df,SR_LOOKBACK) if s<entry]
+        entry=df.close.iloc[-1]
+        supports=[s for s in find_support(df,SR_LOOKBACK) if s<entry]
         if not supports:
             DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":"No support"})
             return None
 
-        sl = max(supports)*(1-ZONE_BUFFER)
-        risk = entry-sl
-        if risk <= entry*0.002:
+        sl=max(supports)*(1-ZONE_BUFFER)
+        risk=entry-sl
+        if risk<=entry*0.002:
             DEBUG_LOG.append({"Symbol":symbol,"Source":source,"Reason":"Risk kecil"})
             return None
 
-        phase = "AKUMULASI_KUAT" if score>=6 else "AKUMULASI_LEMAH"
+        phase="AKUMULASI_KUAT" if score>=6 else "AKUMULASI_LEMAH"
 
         return {
-            "Time": now_wib(),
-            "CreatedAt": datetime.now(timezone.utc).isoformat(),
-            "Symbol": symbol,
-            "Source": source,
-            "Phase": phase,
-            "Score": score,
-            "Entry": round(entry,6),
-            "SL": round(sl,6),
-            "TP1": round(entry+risk*TP1_R,6),
-            "TP2": round(entry+risk*TP2_R,6),
-            "Rating": "⭐"*score,
-            "Status": "OPEN",
-            "Label": "NEW"
+            "Time":now_wib(),
+            "CreatedAt":datetime.now(timezone.utc).isoformat(),
+            "Symbol":symbol,
+            "Source":source,
+            "Phase":phase,
+            "Score":score,
+            "Entry":round(entry,6),
+            "SL":round(sl,6),
+            "TP1":round(entry+risk*TP1_R,6),
+            "TP2":round(entry+risk*TP2_R,6),
+            "Rating":"⭐"*score,
+            "Status":"OPEN",
+            "Label":"NEW"
         }
 
     except Exception as e:
@@ -277,7 +285,7 @@ def check_signal(exchange, symbol, source):
 # =====================================================
 # CHART
 # =====================================================
-def render_chart(df, stl, adl, sig):
+def render_chart(df,stl,adl,sig):
     fig=make_subplots(rows=2,cols=1,shared_xaxes=True,row_heights=[0.7,0.3])
     fig.add_candlestick(x=df.index,open=df.open,high=df.high,low=df.low,close=df.close,row=1,col=1)
     fig.add_trace(go.Scatter(x=df.index,y=stl,line=dict(color="lime")),row=1,col=1)
@@ -294,12 +302,12 @@ st.set_page_config("OPSI A PRO — FINAL",layout="wide")
 st.title("🚀 OPSI A PRO — FINAL PRODUCTION")
 
 with st.sidebar:
-    DEBUG_MODE = st.toggle("🧪 Debug Filter", value=False)
+    DEBUG_MODE=st.toggle("🧪 Debug Filter",value=False)
 
-okx = get_okx()
-bitget = get_bitget()
+okx=get_okx()
+bitget=get_bitget()
 
-tab1,tab2,tab3 = st.tabs(["📡 Live Scan","📜 Riwayat","🧪 Debug"])
+tab1,tab2,tab3,tab4=st.tabs(["📡 Live Scan","📜 Riwayat","🎲 Monte Carlo","🧪 Debug"])
 
 # =====================================================
 # LIVE SCAN
@@ -312,8 +320,8 @@ with tab1:
         progress=st.progress(0)
 
         for i,(sym,src) in enumerate(symbols,1):
-            ex = okx if src=="OKX" else bitget
-            sig = check_signal(ex,sym,src)
+            ex=okx if src=="OKX" else bitget
+            sig=check_signal(ex,sym,src)
             if sig:
                 save_signal(sig)
                 found.append(sig)
@@ -329,7 +337,7 @@ with tab1:
 
             for sig in found:
                 with st.expander(f"📈 {sig['Symbol']} ({sig['Source']})"):
-                    ex = okx if sig["Source"]=="OKX" else bitget
+                    ex=okx if sig["Source"]=="OKX" else bitget
                     dfc=pd.DataFrame(
                         ex.fetch_ohlcv(sig["Symbol"],ENTRY_TF,limit=120),
                         columns=["t","open","high","low","close","volume"]
@@ -348,9 +356,40 @@ with tab2:
     st.dataframe(df,use_container_width=True)
 
 # =====================================================
-# DEBUG
+# MONTE CARLO
 # =====================================================
 with tab3:
+    df=load_trade_results()
+    if len(df)<10:
+        st.warning("Data trade belum cukup (min 10).")
+    else:
+        r=df["R"].values
+        risk=st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
+        trades=st.slider("Trades / Simulation",50,500,300)
+
+        if st.button("🎲 Run Monte Carlo"):
+            curves=[]
+            for _ in range(500):
+                bal=10000; eq=[bal]
+                for _ in range(trades):
+                    bal+=bal*risk*np.random.choice(r)
+                    eq.append(bal)
+                curves.append(eq)
+            curves=np.array(curves)
+
+            st.metric("Median Final Balance",f"${np.median(curves[:,-1]):,.0f}")
+            st.metric("Risk of Ruin (<$5k)",f"{(curves[:,-1]<5000).mean()*100:.2f}%")
+
+            fig=go.Figure()
+            for i in range(min(30,len(curves))):
+                fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
+            fig.update_layout(template="plotly_dark",height=400)
+            st.plotly_chart(fig,use_container_width=True)
+
+# =====================================================
+# DEBUG
+# =====================================================
+with tab4:
     if not DEBUG_LOG:
         st.info("Belum ada debug. Jalankan scan.")
     else:
