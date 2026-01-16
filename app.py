@@ -147,18 +147,26 @@ def get_bitget_symbols(min_vol):
     )
     r.raise_for_status()
 
-    out=[]
-    for d in r.json().get("data",[]):
+    symbols = []
+
+    for d in r.json().get("data", []):
         try:
-            s=d.get("symbol")
-            if not s or not s.endswith("USDT"):
+            symbol = d.get("symbol")
+            if not symbol or not symbol.endswith("USDT"):
                 continue
-            vol=float(d.get("usdtVol",0) or d.get("quoteVol",0))
-            if vol>=min_vol:
-                out.append((s.replace("_","-"),"BITGET"))
-        except:
-            pass
-    return out
+
+            # ✅ FIELD RESMI BITGET
+            vol = float(d.get("usdtVolume", 0))
+
+            if vol >= min_vol:
+                # ubah LINKUSDT → LINK-USDT (ccxt format)
+                symbol = symbol.replace("USDT", "-USDT")
+                symbols.append((symbol, "BITGET"))
+
+        except Exception as e:
+            continue
+
+    return symbols
 
 def get_all_symbols(min_vol):
     merged={}
@@ -396,3 +404,4 @@ with tab4:
         dfd=pd.DataFrame(DEBUG_LOG)
         st.dataframe(dfd,use_container_width=True)
         st.bar_chart(dfd["Reason"].value_counts())
+
