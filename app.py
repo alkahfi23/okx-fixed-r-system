@@ -223,57 +223,62 @@ def find_support(df, lb):
             clean.append(s)
     return clean
 
+def volume_oscillator(volume, fast=14, slow=28):
+    fast_ma = volume.ewm(span=fast, adjust=False).mean()
+    slow_ma = volume.ewm(span=slow, adjust=False).mean()
+    vo = (fast_ma - slow_ma) / slow_ma * 100
+    return vo
+
 # =====================================================
 # SIGNAL LOGIC (SCORE BASED)
 # =====================================================
-def check_signal(okx, symbol, source):
+def check_signal(exchange, symbol, source, debug_log):
     try:
         df4h = pd.DataFrame(
-            okx.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
+            exchange.fetch_ohlcv(symbol, "4h", limit=200),
             columns=["t","open","high","low","close","volume"]
         )
-        df1d = pd.DataFrame(
-            okx.fetch_ohlcv(symbol, SR_TF, limit=LIMIT_1D),
-            columns=["t","open","high","low","close","volume"]
-        )
+
+        if len(df4h) < 50:
+            debug_log.append({
+                "Symbol": symbol,
+                "Source": source,
+                "Reason": "Data OHLCV kurang"
+            })
+            return None
 
         stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
-        vo = volume_oscillator(df4h.volume, VO_FAST, VO_SLOW)
-        adl = accumulation_distribution(df4h)
+        vo = volume_oscillator(df4h["volume"], VO_FAST, VO_SLOW)
 
         if trend.iloc[-1] != 1:
-            DEBUG_LOG.append((symbol, source, "Trend not bullish"))
+            debug_log.append({
+                "Symbol": symbol,
+                "Source": source,
+                "Reason": "Trend bukan bullish"
+            })
             return None
 
         if vo.iloc[-1] < VO_MIN:
-            DEBUG_LOG.append((symbol, source, f"VO too low ({vo.iloc[-1]:.2f})"))
+            debug_log.append({
+                "Symbol": symbol,
+                "Source": source,
+                "Reason": "Volume oscillator lemah"
+            })
             return None
 
-        if adl.iloc[-1] <= adl.iloc[-10]:
-            DEBUG_LOG.append((symbol, source, "No accumulation"))
-            return None
-
-        ema200 = df1d.close.ewm(span=200).mean()
-        if df1d.close.iloc[-1] < ema200.iloc[-1]:
-            DEBUG_LOG.append((symbol, source, "Below EMA200 Daily"))
-            return None
-
-        entry = df4h.close.iloc[-1]
-        supports = find_support(df1d, SR_LOOKBACK)
-        supports = [s for s in supports if s < entry]
-
-        if not supports:
-            DEBUG_LOG.append((symbol, source, "No valid support"))
-            return None
-
-        sl = max(supports) * (1 - ZONE_BUFFER)
+        # ===== SIGNAL VALID =====
+        entry = df4h["close"].iloc[-1]
+        sl = df4h["low"].rolling(20).min().iloc[-1] * 0.995
         risk = entry - sl
 
         if risk <= entry * 0.002:
-            DEBUG_LOG.append((symbol, source, "Risk too small"))
+            debug_log.append({
+                "Symbol": symbol,
+                "Source": source,
+                "Reason": "Risk terlalu kecil"
+            })
             return None
 
-        # === LOLOS ===
         return {
             "Time": now_wib(),
             "CreatedAt": datetime.now(timezone.utc).isoformat(),
@@ -291,7 +296,11 @@ def check_signal(okx, symbol, source):
         }
 
     except Exception as e:
-        DEBUG_LOG.append((symbol, source, f"Error: {e}"))
+        debug_log.append({
+            "Symbol": symbol,
+            "Source": source,
+            "Reason": f"Error: {e}"
+        })
         return None
 
 
@@ -316,18 +325,19 @@ def render_chart(df, stl, adl, sig):
 # =====================================================
 # UI
 # =====================================================
+
 st.set_page_config("OPSI A PRO — FINAL", layout="wide")
 st.title("🚀 OPSI A PRO — FINAL PRODUCTION")
+with st.sidebar:
+    DEBUG_MODE = st.toggle("🧪 Debug Filter", value=False)
 
 okx = get_okx()
 bitget = get_bitget()
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📡 Live Scan",
-    "📜 Riwayat",
-    "🎲 Monte Carlo",
-    "🧪 Debug"
-])
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["📡 Live Scan", "📜 Riwayat", "🎲 Monte Carlo", "🧪 Debug"]
+)
+
 
 with tab1:
     if st.button("🔍 Scan Live Signal"):
@@ -423,5 +433,6 @@ with tab4:
 
         st.markdown("### 📊 Ringkasan Alasan Gagal")
         st.bar_chart(df_debug["Reason"].value_counts())
+
 
 
