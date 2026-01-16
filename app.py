@@ -1,4 +1,5 @@
 import streamlit as st
+import os
 import ccxt
 import pandas as pd
 import requests
@@ -405,3 +406,4 @@ with tab3:
                                          opacity=0.3,showlegend=False))
             fig.update_layout(template="plotly_dark",height=400)
             st.plotly_chart(fig,use_container_width=True)
+
