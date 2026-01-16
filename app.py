@@ -141,12 +141,29 @@ def get_bitget_symbols(min_vol):
         timeout=15
     )
     r.raise_for_status()
-    return [
-        (d["symbol"], "BITGET")
-        for d in r.json()["data"]
-        if d["symbol"].endswith("USDT")
-        and float(d["usdtVol"]) >= min_vol
-    ]
+
+    symbols = []
+    for d in r.json().get("data", []):
+        try:
+            symbol = d.get("symbol")
+            if not symbol or not symbol.endswith("USDT"):
+                continue
+
+            # fallback volume field (AMAN)
+            vol = (
+                float(d.get("usdtVol", 0)) or
+                float(d.get("quoteVol", 0)) or
+                float(d.get("volCcy24h", 0))
+            )
+
+            if vol >= min_vol:
+                symbols.append((symbol, "BITGET"))
+
+        except Exception:
+            continue
+
+    return symbols
+
 
 def get_all_symbols(min_vol):
     merged = {}
@@ -372,3 +389,4 @@ with tab3:
                 fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
             fig.update_layout(template="plotly_dark",height=400)
             st.plotly_chart(fig,use_container_width=True)
+
