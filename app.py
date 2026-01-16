@@ -1,3 +1,4 @@
+DEBUG_LOG = []
 import streamlit as st
 import ccxt
 import pandas as pd
@@ -225,65 +226,74 @@ def find_support(df, lb):
 # =====================================================
 # SIGNAL LOGIC (SCORE BASED)
 # =====================================================
-def check_signal(exchange, symbol, source):
-    df4h = pd.DataFrame(exchange.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
-        columns=["t","open","high","low","close","volume"])
-    df1d = pd.DataFrame(exchange.fetch_ohlcv(symbol, SR_TF, limit=LIMIT_1D),
-        columns=["t","open","high","low","close","volume"])
+def check_signal(okx, symbol, source):
+    try:
+        df4h = pd.DataFrame(
+            okx.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
+            columns=["t","open","high","low","close","volume"]
+        )
+        df1d = pd.DataFrame(
+            okx.fetch_ohlcv(symbol, SR_TF, limit=LIMIT_1D),
+            columns=["t","open","high","low","close","volume"]
+        )
 
-    stl,trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
-    vo = volume_osc(df4h.volume, VO_FAST, VO_SLOW)
-    adl = accumulation_distribution(df4h)
+        stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
+        vo = volume_oscillator(df4h.volume, VO_FAST, VO_SLOW)
+        adl = accumulation_distribution(df4h)
 
-    score = 0
-    phase = None
+        if trend.iloc[-1] != 1:
+            DEBUG_LOG.append((symbol, source, "Trend not bullish"))
+            return None
 
-    if trend.iloc[-1]==1:
-        score += 2
-    if vo.iloc[-1] > VO_MIN:
-        score += 1
-    if adl.iloc[-1] > adl.iloc[-10]:
-        score += 2
+        if vo.iloc[-1] < VO_MIN:
+            DEBUG_LOG.append((symbol, source, f"VO too low ({vo.iloc[-1]:.2f})"))
+            return None
 
-    if score >= 5:
-        phase = "AKUMULASI_KUAT"
-    elif score >= 3:
-        phase = "AKUMULASI_LEMAH"
-    else:
+        if adl.iloc[-1] <= adl.iloc[-10]:
+            DEBUG_LOG.append((symbol, source, "No accumulation"))
+            return None
+
+        ema200 = df1d.close.ewm(span=200).mean()
+        if df1d.close.iloc[-1] < ema200.iloc[-1]:
+            DEBUG_LOG.append((symbol, source, "Below EMA200 Daily"))
+            return None
+
+        entry = df4h.close.iloc[-1]
+        supports = find_support(df1d, SR_LOOKBACK)
+        supports = [s for s in supports if s < entry]
+
+        if not supports:
+            DEBUG_LOG.append((symbol, source, "No valid support"))
+            return None
+
+        sl = max(supports) * (1 - ZONE_BUFFER)
+        risk = entry - sl
+
+        if risk <= entry * 0.002:
+            DEBUG_LOG.append((symbol, source, "Risk too small"))
+            return None
+
+        # === LOLOS ===
+        return {
+            "Time": now_wib(),
+            "CreatedAt": datetime.now(timezone.utc).isoformat(),
+            "Symbol": symbol,
+            "Source": source,
+            "Phase": "AKUMULASI_KUAT",
+            "Score": 5,
+            "Entry": round(entry, 6),
+            "SL": round(sl, 6),
+            "TP1": round(entry + risk * 0.8, 6),
+            "TP2": round(entry + risk * 2.0, 6),
+            "Rating": "⭐⭐⭐⭐⭐",
+            "Status": "OPEN",
+            "Label": "NEW"
+        }
+
+    except Exception as e:
+        DEBUG_LOG.append((symbol, source, f"Error: {e}"))
         return None
 
-    ema200 = df1d.close.ewm(span=200).mean()
-    if df1d.close.iloc[-1] < ema200.iloc[-1]:
-        return None
-
-    entry = df4h.close.iloc[-1]
-    supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
-    if not supports:
-        return None
-
-    sl = max(supports)*(1-ZONE_BUFFER)
-    risk = entry - sl
-    if risk <= entry*0.002:
-        return None
-
-    tp1 = entry + risk*TP1_R
-    tp2 = entry + risk*TP2_R
-
-    return {
-        "Time": now_wib(),
-        "CreatedAt": datetime.now(timezone.utc).isoformat(),
-        "Symbol": symbol,
-        "Source": source,
-        "Phase": phase,
-        "Score": score,
-        "Entry": round(entry,4),
-        "SL": round(sl,4),
-        "TP1": round(tp1,4),
-        "TP2": round(tp2,4),
-        "Rating": "⭐"*score,
-        "Status": "OPEN",
-        "Label": "NEW"
-    }
 
 # =====================================================
 # CHART
@@ -312,10 +322,16 @@ st.title("🚀 OPSI A PRO — FINAL PRODUCTION")
 okx = get_okx()
 bitget = get_bitget()
 
-tab1,tab2,tab3 = st.tabs(["📡 Live Scan","📜 Riwayat","🎲 Monte Carlo"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📡 Live Scan",
+    "📜 Riwayat",
+    "🎲 Monte Carlo",
+    "🧪 Debug"
+])
 
 with tab1:
     if st.button("🔍 Scan Live Signal"):
+        DEBUG_LOG.clear()
         symbols = get_all_symbols(MIN_USDT_VOLUME)
         progress = st.progress(0)
         found = []
@@ -389,4 +405,23 @@ with tab3:
                 fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
             fig.update_layout(template="plotly_dark",height=400)
             st.plotly_chart(fig,use_container_width=True)
+with tab4:
+    st.subheader("🧪 Debug Rejected Symbols")
+
+    if not DEBUG_LOG:
+        st.info("Belum ada data debug. Jalankan scan dulu.")
+    else:
+        df_debug = pd.DataFrame(
+            DEBUG_LOG,
+            columns=["Symbol", "Source", "Reason"]
+        )
+
+        st.dataframe(
+            df_debug,
+            use_container_width=True
+        )
+
+        st.markdown("### 📊 Ringkasan Alasan Gagal")
+        st.bar_chart(df_debug["Reason"].value_counts())
+
 
