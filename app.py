@@ -77,10 +77,17 @@ def load_signal_history():
 
 def save_signal(sig):
     df = load_signal_history()
+
+    # SAFETY: pastikan Source selalu ada
+    if not sig.get("Source"):
+        sig["Source"] = "OKX"
+
     if ((df["Symbol"] == sig["Symbol"]) & (df["Status"] == "OPEN")).any():
         return
+
     df = pd.concat([df, pd.DataFrame([sig])], ignore_index=True)
     df.to_csv(SIGNAL_LOG_FILE, index=False)
+
 
 def load_trade_results():
     if not os.path.exists(TRADE_RESULT_FILE):
@@ -104,6 +111,27 @@ def expire_new():
     df.to_csv(SIGNAL_LOG_FILE, index=False)
 
 expire_new()
+
+def normalize_sources():
+    df = load_signal_history()
+    if "Source" not in df.columns:
+        return
+
+    changed = False
+    for i,row in df.iterrows():
+        if pd.isna(row["Source"]) or row["Source"] in ["", "None"]:
+            # infer dari format symbol
+            if "/" in row["Symbol"]:
+                df.at[i, "Source"] = "BITGET"
+            else:
+                df.at[i, "Source"] = "OKX"
+            changed = True
+
+    if changed:
+        df.to_csv(SIGNAL_LOG_FILE, index=False)
+
+normalize_sources()
+
 
 # ================= SYMBOL SOURCES =================
 @st.cache_data(ttl=300)
@@ -385,4 +413,5 @@ with tab4:
         st.bar_chart(df["Reason"].value_counts())
     else:
         st.info("Belum ada data debug.")
+
 
