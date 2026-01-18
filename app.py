@@ -296,6 +296,25 @@ def render_chart(df, stl, adl, sig):
     fig.update_layout(template="plotly_dark",height=520,xaxis_rangeslider_visible=False)
     return fig
 
+
+def restore_signal_history_from_upload(uploaded_file):
+    try:
+        df = pd.read_csv(uploaded_file)
+        required_cols = [
+            "Time","CreatedAt","Symbol","Phase","Score",
+            "Entry","SL","TP1","TP2",
+            "Rating","Status","Label"
+        ]
+
+        if not all(c in df.columns for c in required_cols):
+            return False, "Format CSV tidak valid"
+
+        df.to_csv(SIGNAL_LOG_FILE, index=False)
+        return True, f"{len(df)} signal berhasil direstore"
+
+    except Exception as e:
+        return False, str(e)
+
 # =====================================================
 # UI
 # =====================================================
@@ -361,8 +380,32 @@ with tab1:
 # TAB 2 — HISTORY
 # =====================================================
 with tab2:
+    st.subheader("📜 Riwayat Signal")
+
+    # ==========================
+    # RESTORE SECTION
+    # ==========================
+    with st.expander("📤 Restore Signal History (CSV)"):
+        uploaded = st.file_uploader(
+            "Upload signal_history.csv",
+            type=["csv"],
+            help="Upload file hasil backup sebelumnya"
+        )
+
+        if uploaded:
+            ok, msg = restore_signal_history_from_upload(uploaded)
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+
+    # ==========================
+    # SHOW DATA
+    # ==========================
     df = load_signal_history().sort_values("Score", ascending=False)
     st.dataframe(df, use_container_width=True)
+
     st.download_button(
         "⬇️ Download CSV",
         df.to_csv(index=False),
@@ -412,3 +455,4 @@ with tab4:
         df_dbg = pd.DataFrame(DEBUG_LOG)
         st.dataframe(df_dbg, use_container_width=True)
         st.bar_chart(df_dbg["Reason"].value_counts())
+
