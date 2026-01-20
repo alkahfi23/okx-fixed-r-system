@@ -223,6 +223,54 @@ def update_trade_outcomes(okx):
         df.to_csv(SIGNAL_LOG_FILE,index=False)
         results.to_csv(TRADE_RESULT_FILE,index=False)
 
+def restore_signal_csv(uploaded_file):
+    if uploaded_file is None:
+        return
+
+    try:
+        old_df = pd.read_csv(uploaded_file)
+        cur_df = load_signal_history()
+
+        # normalisasi kolom
+        for col in cur_df.columns:
+            if col not in old_df.columns:
+                old_df[col] = ""
+
+        old_df = old_df[cur_df.columns]
+
+        merged = pd.concat([cur_df, old_df], ignore_index=True)
+        merged = merged.drop_duplicates(
+            subset=["Symbol","Entry","CreatedAt"],
+            keep="first"
+        )
+
+        merged.to_csv(SIGNAL_LOG_FILE, index=False)
+        st.success("✅ Signal history berhasil direstore")
+
+    except Exception as e:
+        st.error(f"Restore gagal: {e}")
+
+def restore_trade_csv(uploaded_file):
+    if uploaded_file is None:
+        return
+
+    try:
+        old_df = pd.read_csv(uploaded_file)
+        cur_df = load_trade_results()
+
+        merged = pd.concat([cur_df, old_df], ignore_index=True)
+        merged = merged.drop_duplicates(
+            subset=["Symbol","Time","R"],
+            keep="first"
+        )
+
+        merged.to_csv(TRADE_RESULT_FILE, index=False)
+        st.success("✅ Trade result berhasil direstore")
+
+    except Exception as e:
+        st.error(f"Restore gagal: {e}")
+
+
 # =====================================================
 # SYMBOLS
 # =====================================================
@@ -374,6 +422,31 @@ with tab1:
 
 with tab2:
     df=load_signal_history().sort_values("Score",ascending=False)
+    with st.expander("♻️ Restore Data Lama"):
+    st.markdown("Upload file CSV hasil backup lama")
+
+    sig_file = st.file_uploader(
+        "Restore Signal History (signal_history.csv)",
+        type=["csv"],
+        key="restore_signal"
+    )
+
+    trade_file = st.file_uploader(
+        "Restore Trade Results (trade_results.csv)",
+        type=["csv"],
+        key="restore_trade"
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("♻️ Restore Signal"):
+            restore_signal_csv(sig_file)
+
+    with col2:
+        if st.button("♻️ Restore Trade"):
+            restore_trade_csv(trade_file)
+
     st.dataframe(df,use_container_width=True)
     st.download_button("⬇️ Download CSV",df.to_csv(index=False),"signal_history.csv")
 
@@ -410,3 +483,4 @@ with tab4:
         st.info("Belum ada debug data")
     else:
         st.dataframe(pd.DataFrame(DEBUG_LOG),use_container_width=True)
+
