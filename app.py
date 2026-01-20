@@ -1,29 +1,22 @@
-# =====================================================
-# OPSI A PRO — FINAL PRODUCTION (OKX ONLY)
-# =====================================================
-
 import streamlit as st
 import ccxt
 import pandas as pd
-import requests
+import numpy as np
 import time
 import os
-import random
-import numpy as np
+import requests
+from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timezone, timedelta
-
-# =====================================================
-# GLOBAL DEBUG
-# =====================================================
-DEBUG_LOG = []
 
 # =====================================================
 # CONFIG
 # =====================================================
 ENTRY_TF = "4h"
+DAILY_TF = "1d"
+
 LIMIT_4H = 200
+LIMIT_1D = 200
 
 ATR_PERIOD = 10
 MULTIPLIER = 3.0
@@ -32,18 +25,17 @@ VO_FAST = 14
 VO_SLOW = 28
 VO_MIN = 5
 
-SUPPORT_LOOKBACK = 20
-SUPPORT_BUFFER = 0.995
+SR_LOOKBACK = 5
+ZONE_BUFFER = 0.01
+
+TP1_R = 0.8
+TP2_R = 2.0
+
+NEW_EXPIRE_HOURS = 4
 
 MIN_USDT_VOLUME = 2_000_000
 RATE_LIMIT_DELAY = 0.15
 MAX_SCAN_SYMBOLS = 120
-
-# R ACCOUNTING
-TP1_PARTIAL_R = 0.5
-TP2_FINAL_R   = 1.5
-
-NEW_EXPIRE_HOURS = 4
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIGNAL_LOG_FILE = os.path.join(BASE_DIR, "signal_history.csv")
@@ -53,15 +45,22 @@ TRADE_RESULT_FILE = os.path.join(BASE_DIR, "trade_results.csv")
 # TIMEZONE
 # =====================================================
 WIB = timezone(timedelta(hours=7))
+
 def now_wib():
     return datetime.now(timezone.utc).astimezone(WIB).strftime("%Y-%m-%d %H:%M WIB")
 
 # =====================================================
-# EXCHANGE (OKX)
+# OKX
 # =====================================================
 @st.cache_resource
 def get_okx():
     return ccxt.okx({"enableRateLimit": True})
+
+# =====================================================
+# UTIL
+# =====================================================
+def normalize_symbol(symbol):
+    return symbol.replace("/", "-").upper().strip()
 
 # =====================================================
 # FILE HANDLER
@@ -69,9 +68,10 @@ def get_okx():
 def load_signal_history():
     if not os.path.exists(SIGNAL_LOG_FILE):
         df = pd.DataFrame(columns=[
-            "Time","CreatedAt","Symbol","Phase","Score",
+            "Time","CreatedAt","Symbol",
+            "Phase","Score",
             "Entry","SL","TP1","TP2",
-            "Rating","Status","Label"
+            "Status","Label","AutoLabel"
         ])
         df.to_csv(SIGNAL_LOG_FILE, index=False)
     return pd.read_csv(SIGNAL_LOG_FILE)
@@ -91,97 +91,19 @@ def load_trade_results():
     return pd.read_csv(TRADE_RESULT_FILE)
 
 # =====================================================
-# AUTO EXPIRE "NEW" (4 JAM)
+# ANTI DUPLICATE (FINAL)
 # =====================================================
-def expire_new():
+def has_open_signal(symbol):
     df = load_signal_history()
-    if df.empty:
-        return
-    now = datetime.now(timezone.utc)
-    changed = False
-    for i,row in df.iterrows():
-        if row["Label"] != "NEW":
-            continue
-        try:
-            created = datetime.fromisoformat(row["CreatedAt"])
-            if now - created > timedelta(hours=NEW_EXPIRE_HOURS):
-                df.at[i,"Label"] = ""
-                changed = True
-        except:
-            pass
-    if changed:
-        df.to_csv(SIGNAL_LOG_FILE, index=False)
+    return ((df["Symbol"] == symbol) & (df["Status"] == "OPEN")).any()
 
-# =====================================================
-# AUTO UPDATE TP / SL (REAL-TIME)
-# =====================================================
-def update_trade_outcomes(okx):
-    history = load_signal_history()
-    if history.empty:
-        return
-
-    results = load_trade_results()
-    updated = False
-
-    for i,row in history.iterrows():
-        status = row["Status"]
-        if status in ["SL HIT","TP2 HIT","BE HIT"]:
-            continue
-
-        try:
-            price = okx.fetch_ticker(row["Symbol"])["last"]
-        except:
-            continue
-
-        r = None
-        new_status = None
-
-        if status == "OPEN":
-            if price <= row["SL"]:
-                r, new_status = -1, "SL HIT"
-            elif price >= row["TP1"]:
-                r, new_status = TP1_PARTIAL_R, "TP1 HIT"
-
-        elif status == "TP1 HIT":
-            if price <= row["Entry"]:
-                r, new_status = 0, "BE HIT"
-            elif price >= row["TP2"]:
-                r, new_status = TP2_FINAL_R, "TP2 HIT"
-
-        if new_status:
-            history.at[i,"Status"] = new_status
-            results = pd.concat([
-                results,
-                pd.DataFrame([{
-                    "Time": now_wib(),
-                    "Symbol": row["Symbol"],
-                    "R": r
-                }])
-            ], ignore_index=True)
-            updated = True
-
-    if updated:
-        history.to_csv(SIGNAL_LOG_FILE, index=False)
-        results.to_csv(TRADE_RESULT_FILE, index=False)
-
-# =====================================================
-# MARKET SYMBOLS (OKX)
-# =====================================================
-@st.cache_data(ttl=300)
-def get_okx_symbols(min_vol):
-    r = requests.get(
-        "https://www.okx.com/api/v5/market/tickers",
-        params={"instType": "SPOT"},
-        timeout=15
-    )
-    r.raise_for_status()
-    syms = [
-        d["instId"] for d in r.json()["data"]
-        if d["instId"].endswith("-USDT")
-        and float(d["volCcy24h"]) >= min_vol
-    ]
-    random.shuffle(syms)
-    return syms[:MAX_SCAN_SYMBOLS]
+def similar_entry_exists(symbol, entry, tolerance=0.002):
+    df = load_signal_history()
+    rows = df[(df["Symbol"] == symbol) & (df["Status"] == "OPEN")]
+    for _, r in rows.iterrows():
+        if abs(r["Entry"] - entry) / entry <= tolerance:
+            return True
+    return False
 
 # =====================================================
 # INDICATORS
@@ -196,93 +118,195 @@ def supertrend(df, period, mult):
 
     stl = pd.Series(index=df.index,dtype=float)
     trend = pd.Series(index=df.index,dtype=int)
-    trend.iloc[0]=1
-    stl.iloc[0]=lower.iloc[0]
+
+    trend.iloc[0] = 1
+    stl.iloc[0] = lower.iloc[0]
 
     for i in range(1,len(df)):
-        if trend.iloc[i-1]==1:
-            stl.iloc[i]=max(lower.iloc[i],stl.iloc[i-1])
-            trend.iloc[i]=1 if c.iloc[i]>stl.iloc[i] else -1
+        if trend.iloc[i-1] == 1:
+            stl.iloc[i] = max(lower.iloc[i], stl.iloc[i-1])
+            trend.iloc[i] = 1 if c.iloc[i] > stl.iloc[i] else -1
         else:
-            stl.iloc[i]=min(upper.iloc[i],stl.iloc[i-1])
-            trend.iloc[i]=-1 if c.iloc[i]<stl.iloc[i] else 1
-    return stl,trend
+            stl.iloc[i] = min(upper.iloc[i], stl.iloc[i-1])
+            trend.iloc[i] = -1 if c.iloc[i] < stl.iloc[i] else 1
 
-def volume_oscillator(volume, fast=14, slow=28):
-    fast_ma = volume.ewm(span=fast, adjust=False).mean()
-    slow_ma = volume.ewm(span=slow, adjust=False).mean()
-    return (fast_ma - slow_ma) / slow_ma * 100
+    return stl, trend
+
+def volume_osc(v, f, s):
+    return (v.ewm(span=f).mean() - v.ewm(span=s).mean()) / v.ewm(span=s).mean() * 100
 
 def accumulation_distribution(df):
-    h,l,c,v=df.high,df.low,df.close,df.volume
-    mfm=((c-l)-(h-c))/(h-l)
-    mfm=mfm.replace([np.inf,-np.inf],0).fillna(0)
+    h,l,c,v = df.high, df.low, df.close, df.volume
+    mfm = ((c-l)-(h-c))/(h-l)
+    mfm = mfm.replace([np.inf,-np.inf],0).fillna(0)
     return (mfm*v).cumsum()
 
+def find_support(df, lb):
+    levels=[]
+    for i in range(lb,len(df)-lb):
+        if df.low.iloc[i]==min(df.low.iloc[i-lb:i+lb+1]):
+            levels.append(df.low.iloc[i])
+    levels=sorted(set(levels))
+    clean=[]
+    for s in levels:
+        if not clean or abs(s-clean[-1])/s>0.01:
+            clean.append(s)
+    return clean
+
 # =====================================================
-# SIGNAL LOGIC (SCORE BASED + SUPPORT SL)
+# AUTO LABEL ENGINE
 # =====================================================
-def check_signal(okx, symbol, debug=False):
-    try:
-        df = pd.DataFrame(
-            okx.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
-            columns=["t","open","high","low","close","volume"]
-        )
+def auto_label(row, price):
+    if row["Status"] in ["TP2 HIT","SL HIT","BE HIT"]:
+        return "NO REENTRY"
 
-        if len(df) < 50:
-            if debug: DEBUG_LOG.append({"Symbol":symbol,"Reason":"OHLCV kurang"})
-            return None
+    entry=row["Entry"]; sl=row["SL"]
 
-        stl,trend = supertrend(df, ATR_PERIOD, MULTIPLIER)
-        vo = volume_oscillator(df.volume, VO_FAST, VO_SLOW)
-        adl = accumulation_distribution(df)
+    if price < sl:
+        return "NO REENTRY"
 
-        score = 0
-        if trend.iloc[-1] == 1: score += 3
-        if vo.iloc[-1] > VO_MIN: score += 2
-        if adl.iloc[-1] > adl.iloc[-10]: score += 2
+    if abs(price-entry)/entry <= 0.003:
+        return "RETEST"
 
-        if score < 5:
-            if debug: DEBUG_LOG.append({"Symbol":symbol,"Reason":"Score rendah"})
-            return None
+    if price > entry:
+        return "HOLD"
 
-        entry = df.close.iloc[-1]
-        support = df.low.rolling(SUPPORT_LOOKBACK).min().iloc[-1]
-        sl = support * SUPPORT_BUFFER
-        risk = entry - sl
+    return ""
 
-        if risk <= entry*0.002:
-            if debug: DEBUG_LOG.append({"Symbol":symbol,"Reason":"Risk kecil"})
-            return None
+def update_auto_labels(okx):
+    df = load_signal_history()
+    changed=False
+    for i,row in df.iterrows():
+        try:
+            price = okx.fetch_ticker(row["Symbol"])["last"]
+        except:
+            continue
+        new = auto_label(row, price)
+        if row.get("AutoLabel") != new:
+            df.at[i,"AutoLabel"]=new
+            changed=True
+    if changed:
+        df.to_csv(SIGNAL_LOG_FILE,index=False)
 
-        phase = "AKUMULASI_KUAT" if score >= 6 else "AKUMULASI_LEMAH"
-        rating = "⭐"*score
+# =====================================================
+# TP / SL UPDATE
+# =====================================================
+def update_trade_outcomes(okx):
+    df = load_signal_history()
+    results = load_trade_results()
+    updated=False
 
-        return {
-            "Time": now_wib(),
-            "CreatedAt": datetime.now(timezone.utc).isoformat(),
-            "Symbol": symbol,
-            "Phase": phase,
-            "Score": score,
-            "Entry": round(entry,6),
-            "SL": round(sl,6),
-            "TP1": round(entry + risk*0.8,6),
-            "TP2": round(entry + risk*2.0,6),
-            "Rating": rating,
-            "Status": "OPEN",
-            "Label": "NEW"
-        }
+    for i,row in df.iterrows():
+        if row["Status"]!="OPEN":
+            continue
+        try:
+            price = okx.fetch_ticker(row["Symbol"])["last"]
+        except:
+            continue
 
-    except Exception as e:
-        if debug:
-            DEBUG_LOG.append({"Symbol":symbol,"Reason":str(e)})
+        r=None; status=None
+        if price <= row["SL"]:
+            r,status=-1,"SL HIT"
+        elif price >= row["TP2"]:
+            r,status=TP2_R,"TP2 HIT"
+        elif price >= row["TP1"]:
+            r,status=TP1_R,"TP1 HIT"
+
+        if r is not None:
+            df.at[i,"Status"]=status
+            results=pd.concat([results,pd.DataFrame([{
+                "Time":now_wib(),"Symbol":row["Symbol"],"R":r
+            }])],ignore_index=True)
+            updated=True
+
+    if updated:
+        df.to_csv(SIGNAL_LOG_FILE,index=False)
+        results.to_csv(TRADE_RESULT_FILE,index=False)
+
+# =====================================================
+# SYMBOLS
+# =====================================================
+@st.cache_data(ttl=300)
+def get_okx_symbols():
+    r=requests.get(
+        "https://www.okx.com/api/v5/market/tickers",
+        params={"instType":"SPOT"},timeout=15
+    )
+    r.raise_for_status()
+    syms=[d["instId"] for d in r.json()["data"]
+          if d["instId"].endswith("-USDT")
+          and float(d["volCcy24h"])>=MIN_USDT_VOLUME]
+    np.random.shuffle(syms)
+    return syms[:MAX_SCAN_SYMBOLS]
+
+# =====================================================
+# SIGNAL LOGIC
+# =====================================================
+def check_signal(okx,symbol,debug):
+    symbol=normalize_symbol(symbol)
+
+    if has_open_signal(symbol):
+        debug.append({"Symbol":symbol,"Reason":"Already OPEN"})
         return None
+
+    df4h=pd.DataFrame(
+        okx.fetch_ohlcv(symbol,ENTRY_TF,limit=LIMIT_4H),
+        columns=["t","open","high","low","close","volume"]
+    )
+    df1d=pd.DataFrame(
+        okx.fetch_ohlcv(symbol,DAILY_TF,limit=LIMIT_1D),
+        columns=["t","open","high","low","close","volume"]
+    )
+
+    stl,trend=supertrend(df4h,ATR_PERIOD,MULTIPLIER)
+    vo=volume_osc(df4h.volume,VO_FAST,VO_SLOW)
+    adl=accumulation_distribution(df4h)
+
+    if trend.iloc[-1]!=1 or vo.iloc[-1]<VO_MIN or adl.iloc[-1]<=adl.iloc[-10]:
+        debug.append({"Symbol":symbol,"Reason":"Trend/Volume/ADL fail"})
+        return None
+
+    ema200=df1d.close.ewm(span=200).mean()
+    if df1d.close.iloc[-1]<ema200.iloc[-1]:
+        debug.append({"Symbol":symbol,"Reason":"Below EMA200"})
+        return None
+
+    entry=df4h.close.iloc[-1]
+    supports=find_support(df1d,SR_LOOKBACK)
+    supports=[s for s in supports if s<entry]
+    if not supports:
+        return None
+
+    sl=max(supports)*(1-ZONE_BUFFER)
+    risk=entry-sl
+    if risk<=entry*0.002:
+        return None
+
+    if similar_entry_exists(symbol,entry):
+        debug.append({"Symbol":symbol,"Reason":"Duplicate entry zone"})
+        return None
+
+    score=5
+    return {
+        "Time":now_wib(),
+        "CreatedAt":datetime.now(timezone.utc).isoformat(),
+        "Symbol":symbol,
+        "Phase":"AKUMULASI_KUAT",
+        "Score":score,
+        "Entry":round(entry,6),
+        "SL":round(sl,6),
+        "TP1":round(entry+risk*TP1_R,6),
+        "TP2":round(entry+risk*TP2_R,6),
+        "Status":"OPEN",
+        "Label":"NEW",
+        "AutoLabel":""
+    }
 
 # =====================================================
 # CHART
 # =====================================================
-def render_chart(df, stl, adl, sig):
-    fig = make_subplots(rows=2,cols=1,shared_xaxes=True,row_heights=[0.7,0.3])
+def render_chart(df,stl,adl,sig):
+    fig=make_subplots(rows=2,cols=1,shared_xaxes=True,row_heights=[0.7,0.3])
     fig.add_candlestick(
         x=df.index,open=df.open,high=df.high,
         low=df.low,close=df.close,row=1,col=1
@@ -296,147 +320,84 @@ def render_chart(df, stl, adl, sig):
     fig.update_layout(template="plotly_dark",height=520,xaxis_rangeslider_visible=False)
     return fig
 
-
-def restore_signal_history_from_upload(uploaded_file):
-    try:
-        df = pd.read_csv(uploaded_file)
-        required_cols = [
-            "Time","CreatedAt","Symbol","Phase","Score",
-            "Entry","SL","TP1","TP2",
-            "Rating","Status","Label"
-        ]
-
-        if not all(c in df.columns for c in required_cols):
-            return False, "Format CSV tidak valid"
-
-        df.to_csv(SIGNAL_LOG_FILE, index=False)
-        return True, f"{len(df)} signal berhasil direstore"
-
-    except Exception as e:
-        return False, str(e)
-
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OPSI A PRO — OKX FINAL", layout="wide")
-st.title("🚀 OPSI A PRO — OKX FINAL")
+st.set_page_config("OPSI A PRO — FINAL",layout="wide")
+st.title("🚀 OPSI A PRO — FINAL PRODUCTION")
 
 with st.sidebar:
-    DEBUG_MODE = st.toggle("🧪 Debug Filter", False)
+    DEBUG_MODE=st.toggle("🧪 Debug",False)
 
-okx = get_okx()
+okx=get_okx()
 
-expire_new()
+update_trade_outcomes(okx)
+update_auto_labels(okx)
 
-if "trade_updated" not in st.session_state:
-    update_trade_outcomes(okx)
-    st.session_state.trade_updated = True
+tab1,tab2,tab3,tab4=st.tabs(["📡 Scan","📜 History","🎲 Monte Carlo","🧪 Debug"])
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["📡 Live Scan","📜 Riwayat","🎲 Monte Carlo","🧪 Debug"]
-)
+DEBUG_LOG=[]
 
-# =====================================================
-# TAB 1 — LIVE SCAN
-# =====================================================
 with tab1:
-    if st.button("🔍 Scan Live Signal"):
+    if st.button("🔍 Scan Market"):
+        syms=get_okx_symbols()
+        prog=st.progress(0)
+        found=[]
         DEBUG_LOG.clear()
-        found = []
-        symbols = get_okx_symbols(MIN_USDT_VOLUME)
-        progress = st.progress(0)
 
-        for i,sym in enumerate(symbols,1):
-            sig = check_signal(okx, sym, DEBUG_MODE)
+        for i,s in enumerate(syms,1):
+            sig=check_signal(okx,s,DEBUG_LOG)
             if sig:
                 save_signal(sig)
                 found.append(sig)
-            progress.progress(i/len(symbols))
+            prog.progress(i/len(syms))
             time.sleep(RATE_LIMIT_DELAY)
 
-        progress.empty()
+        prog.empty()
 
         if found:
-            df = pd.DataFrame(found).sort_values("Score", ascending=False)
-            st.success(f"🔥 {len(df)} SIGNAL DITEMUKAN")
-            st.dataframe(df, use_container_width=True)
+            df=pd.DataFrame(found).sort_values("Score",ascending=False)
+            st.success(f"🔥 {len(df)} SIGNAL")
+            st.dataframe(df,use_container_width=True)
 
             for sig in found:
                 with st.expander(f"📈 {sig['Symbol']}"):
-                    dfc = pd.DataFrame(
-                        okx.fetch_ohlcv(sig["Symbol"], ENTRY_TF, limit=120),
+                    dfc=pd.DataFrame(
+                        okx.fetch_ohlcv(sig["Symbol"],ENTRY_TF,limit=120),
                         columns=["t","open","high","low","close","volume"]
                     )
-                    stl,_ = supertrend(dfc, ATR_PERIOD, MULTIPLIER)
-                    adl = accumulation_distribution(dfc)
-                    st.plotly_chart(
-                        render_chart(dfc,stl,adl,sig),
-                        use_container_width=True
-                    )
+                    stl,_=supertrend(dfc,ATR_PERIOD,MULTIPLIER)
+                    adl=accumulation_distribution(dfc)
+                    st.plotly_chart(render_chart(dfc,stl,adl,sig),use_container_width=True)
         else:
             st.warning("Tidak ada setup valid.")
 
-# =====================================================
-# TAB 2 — HISTORY
-# =====================================================
 with tab2:
-    st.subheader("📜 Riwayat Signal")
+    df=load_signal_history().sort_values("Score",ascending=False)
+    st.dataframe(df,use_container_width=True)
+    st.download_button("⬇️ Download CSV",df.to_csv(index=False),"signal_history.csv")
 
-    # ==========================
-    # RESTORE SECTION
-    # ==========================
-    with st.expander("📤 Restore Signal History (CSV)"):
-        uploaded = st.file_uploader(
-            "Upload signal_history.csv",
-            type=["csv"],
-            help="Upload file hasil backup sebelumnya"
-        )
-
-        if uploaded:
-            ok, msg = restore_signal_history_from_upload(uploaded)
-            if ok:
-                st.success(msg)
-                st.rerun()
-            else:
-                st.error(msg)
-
-    # ==========================
-    # SHOW DATA
-    # ==========================
-    df = load_signal_history().sort_values("Score", ascending=False)
-    st.dataframe(df, use_container_width=True)
-
-    st.download_button(
-        "⬇️ Download CSV",
-        df.to_csv(index=False),
-        "signal_history.csv",
-        "text/csv"
-    )
-
-# =====================================================
-# TAB 3 — MONTE CARLO
-# =====================================================
 with tab3:
-    df_r = load_trade_results()
-    if len(df_r) < 10:
-        st.warning("Data trade belum cukup (min 10).")
+    df_r=load_trade_results()
+    if len(df_r)<10:
+        st.warning("Trade data belum cukup")
     else:
-        r_vals = df_r["R"].values
-        risk = st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
-        trades = st.slider("Trades / Simulation",50,500,300)
+        r=df_r["R"].values
+        risk=st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
+        trades=st.slider("Trades",50,500,300)
 
         if st.button("🎲 Run Monte Carlo"):
             curves=[]
             for _ in range(500):
                 bal=10000; eq=[bal]
                 for _ in range(trades):
-                    bal += bal*risk*np.random.choice(r_vals)
+                    bal+=bal*risk*np.random.choice(r)
                     eq.append(bal)
                 curves.append(eq)
             curves=np.array(curves)
 
-            st.metric("Median Final Balance", f"${np.median(curves[:,-1]):,.0f}")
-            st.metric("Risk of Ruin (<$5k)", f"{(curves[:,-1]<5000).mean()*100:.2f}%")
+            st.metric("Median Balance",f"${np.median(curves[:,-1]):,.0f}")
+            st.metric("Risk of Ruin",f"{(curves[:,-1]<5000).mean()*100:.2f}%")
 
             fig=go.Figure()
             for i in range(min(30,len(curves))):
@@ -444,15 +405,8 @@ with tab3:
             fig.update_layout(template="plotly_dark",height=400)
             st.plotly_chart(fig,use_container_width=True)
 
-# =====================================================
-# TAB 4 — DEBUG
-# =====================================================
 with tab4:
-    st.subheader("🧪 Debug Rejected Symbols")
     if not DEBUG_LOG:
-        st.info("Belum ada data debug.")
+        st.info("Belum ada debug data")
     else:
-        df_dbg = pd.DataFrame(DEBUG_LOG)
-        st.dataframe(df_dbg, use_container_width=True)
-        st.bar_chart(df_dbg["Reason"].value_counts())
-
+        st.dataframe(pd.DataFrame(DEBUG_LOG),use_container_width=True)
