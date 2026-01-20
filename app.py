@@ -421,34 +421,41 @@ with tab1:
             st.warning("Tidak ada setup valid.")
 
 with tab2:
-    df=load_signal_history().sort_values("Score",ascending=False)
+    df = load_signal_history().sort_values("Score", ascending=False)
+
     with st.expander("♻️ Restore Data Lama"):
-    st.markdown("Upload file CSV hasil backup lama")
+        st.markdown("Upload file CSV hasil backup lama")
 
-    sig_file = st.file_uploader(
-        "Restore Signal History (signal_history.csv)",
-        type=["csv"],
-        key="restore_signal"
+        sig_file = st.file_uploader(
+            "Restore Signal History (signal_history.csv)",
+            type=["csv"],
+            key="restore_signal"
+        )
+
+        trade_file = st.file_uploader(
+            "Restore Trade Results (trade_results.csv)",
+            type=["csv"],
+            key="restore_trade"
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("♻️ Restore Signal"):
+                restore_signal_csv(sig_file)
+
+        with col2:
+            if st.button("♻️ Restore Trade"):
+                restore_trade_csv(trade_file)
+
+    st.dataframe(df, use_container_width=True)
+
+    st.download_button(
+        "⬇️ Download CSV",
+        df.to_csv(index=False),
+        "signal_history.csv"
     )
 
-    trade_file = st.file_uploader(
-        "Restore Trade Results (trade_results.csv)",
-        type=["csv"],
-        key="restore_trade"
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("♻️ Restore Signal"):
-            restore_signal_csv(sig_file)
-
-    with col2:
-        if st.button("♻️ Restore Trade"):
-            restore_trade_csv(trade_file)
-
-    st.dataframe(df,use_container_width=True)
-    st.download_button("⬇️ Download CSV",df.to_csv(index=False),"signal_history.csv")
 
 with tab3:
     df_r=load_trade_results()
@@ -483,4 +490,5 @@ with tab4:
         st.info("Belum ada debug data")
     else:
         st.dataframe(pd.DataFrame(DEBUG_LOG),use_container_width=True)
+
 
