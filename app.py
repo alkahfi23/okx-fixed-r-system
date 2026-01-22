@@ -77,9 +77,16 @@ def load_signal_history():
     return pd.read_csv(SIGNAL_LOG_FILE)
 
 def save_signal(sig):
+    # ⛔ hanya simpan AKUMULASI_KUAT
+    if sig.get("Phase") != "AKUMULASI_KUAT":
+        return
+
     df = load_signal_history()
+
+    # anti duplicate OPEN
     if ((df["Symbol"] == sig["Symbol"]) & (df["Status"] == "OPEN")).any():
         return
+
     df = pd.concat([df, pd.DataFrame([sig])], ignore_index=True)
     df.to_csv(SIGNAL_LOG_FILE, index=False)
 
@@ -544,6 +551,7 @@ with tab4:
         st.info("Belum ada debug data")
     else:
         st.dataframe(pd.DataFrame(DEBUG_LOG),use_container_width=True)
+
 
 
 
