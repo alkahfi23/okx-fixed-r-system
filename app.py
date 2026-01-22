@@ -290,67 +290,92 @@ def get_okx_symbols():
 # =====================================================
 # SIGNAL LOGIC
 # =====================================================
-def check_signal(okx,symbol,debug):
-    symbol=normalize_symbol(symbol)
+def score_to_rating(score):
+    return "⭐" * max(1, min(5, int(score)))
+def check_signal(okx, symbol, debug):
+    symbol = normalize_symbol(symbol)
 
     if has_open_signal(symbol):
-        debug.append({"Symbol":symbol,"Reason":"Already OPEN"})
+        debug.append({"Symbol": symbol, "Reason": "Already OPEN"})
         return None
 
-    df4h=pd.DataFrame(
-        okx.fetch_ohlcv(symbol,ENTRY_TF,limit=LIMIT_4H),
-        columns=["t","open","high","low","close","volume"]
-    )
-    df1d=pd.DataFrame(
-        okx.fetch_ohlcv(symbol,DAILY_TF,limit=LIMIT_1D),
-        columns=["t","open","high","low","close","volume"]
-    )
-
-    stl,trend=supertrend(df4h,ATR_PERIOD,MULTIPLIER)
-    vo=volume_osc(df4h.volume,VO_FAST,VO_SLOW)
-    adl=accumulation_distribution(df4h)
-
-    if trend.iloc[-1]!=1 or vo.iloc[-1]<VO_MIN or adl.iloc[-1]<=adl.iloc[-10]:
-        debug.append({"Symbol":symbol,"Reason":"Trend/Volume/ADL fail"})
+    try:
+        df4h = pd.DataFrame(
+            okx.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
+            columns=["t","open","high","low","close","volume"]
+        )
+        df1d = pd.DataFrame(
+            okx.fetch_ohlcv(symbol, DAILY_TF, limit=LIMIT_1D),
+            columns=["t","open","high","low","close","volume"]
+        )
+    except Exception as e:
+        debug.append({"Symbol": symbol, "Reason": f"OHLCV error: {e}"})
         return None
 
-    ema200=df1d.close.ewm(span=200).mean()
-    if df1d.close.iloc[-1]<ema200.iloc[-1]:
-        debug.append({"Symbol":symbol,"Reason":"Below EMA200"})
+    if len(df4h) < 100 or len(df1d) < 100:
+        debug.append({"Symbol": symbol, "Reason": "Data tidak cukup"})
         return None
 
-    entry=df4h.close.iloc[-1]
-    supports=find_support(df1d,SR_LOOKBACK)
-    supports=[s for s in supports if s<entry]
+    stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
+    vo = volume_osc(df4h.volume, VO_FAST, VO_SLOW)
+    adl = accumulation_distribution(df4h)
+
+    if trend.iloc[-1] != 1:
+        debug.append({"Symbol": symbol, "Reason": "Trend tidak bullish"})
+        return None
+
+    if vo.iloc[-1] < VO_MIN:
+        debug.append({"Symbol": symbol, "Reason": "Volume oscillator lemah"})
+        return None
+
+    if adl.iloc[-1] <= adl.iloc[-10]:
+        debug.append({"Symbol": symbol, "Reason": "ADL tidak naik"})
+        return None
+
+    ema200 = df1d.close.ewm(span=200).mean()
+    if df1d.close.iloc[-1] < ema200.iloc[-1]:
+        debug.append({"Symbol": symbol, "Reason": "Di bawah EMA200 daily"})
+        return None
+
+    entry = df4h.close.iloc[-1]
+
+    supports = find_support(df1d, SR_LOOKBACK)
+    supports = [s for s in supports if s < entry]
+
     if not supports:
+        debug.append({"Symbol": symbol, "Reason": "Tidak ada support valid"})
         return None
 
-    sl=max(supports)*(1-ZONE_BUFFER)
-    risk=entry-sl
-    if risk<=entry*0.002:
+    sl = max(supports) * (1 - ZONE_BUFFER)
+    risk = entry - sl
+
+    if risk <= entry * 0.002:
+        debug.append({"Symbol": symbol, "Reason": "Risk terlalu kecil"})
         return None
 
-    if similar_entry_exists(symbol,entry):
-        debug.append({"Symbol":symbol,"Reason":"Duplicate entry zone"})
+    if similar_entry_exists(symbol, entry):
+        debug.append({"Symbol": symbol, "Reason": "Duplicate entry zone"})
         return None
 
-   score = 5  # atau hasil perhitungan score lu
-   return {
+    # ===== SCORE & RATING (AMAN) =====
+    score = 5
+    rating = score_to_rating(score)
+
+    return {
         "Time": now_wib(),
         "CreatedAt": datetime.now(timezone.utc).isoformat(),
         "Symbol": symbol,
         "Phase": "AKUMULASI_KUAT",
         "Score": score,
-        "Rating": score_to_rating(score),
-        "Entry": round(entry,6),
-        "SL": round(sl,6),
-        "TP1": round(entry+risk*TP1_R,6),
-        "TP2": round(entry+risk*TP2_R,6),
+        "Rating": rating,
+        "Entry": round(entry, 6),
+        "SL": round(sl, 6),
+        "TP1": round(entry + risk * TP1_R, 6),
+        "TP2": round(entry + risk * TP2_R, 6),
         "Status": "OPEN",
         "Label": "NEW",
         "AutoLabel": ""
     }
-
 
 # =====================================================
 # CHART
@@ -519,6 +544,7 @@ with tab4:
         st.info("Belum ada debug data")
     else:
         st.dataframe(pd.DataFrame(DEBUG_LOG),use_container_width=True)
+
 
 
 
