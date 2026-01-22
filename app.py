@@ -31,7 +31,7 @@ ZONE_BUFFER = 0.01
 TP1_R = 0.8
 TP2_R = 2.0
 
-NEW_EXPIRE_HOURS = 4
+NEW_EXPIRE_HOURS = 4 
 
 MIN_USDT_VOLUME = 2_000_000
 RATE_LIMIT_DELAY = 0.15
@@ -69,7 +69,7 @@ def load_signal_history():
     if not os.path.exists(SIGNAL_LOG_FILE):
         df = pd.DataFrame(columns=[
             "Time","CreatedAt","Symbol",
-            "Phase","Score",
+            "Phase","Score","Rating",
             "Entry","SL","TP1","TP2",
             "Status","Label","AutoLabel"
         ])
@@ -334,21 +334,23 @@ def check_signal(okx,symbol,debug):
         debug.append({"Symbol":symbol,"Reason":"Duplicate entry zone"})
         return None
 
-    score=5
-    return {
-        "Time":now_wib(),
-        "CreatedAt":datetime.now(timezone.utc).isoformat(),
-        "Symbol":symbol,
-        "Phase":"AKUMULASI_KUAT",
-        "Score":score,
-        "Entry":round(entry,6),
-        "SL":round(sl,6),
-        "TP1":round(entry+risk*TP1_R,6),
-        "TP2":round(entry+risk*TP2_R,6),
-        "Status":"OPEN",
-        "Label":"NEW",
-        "AutoLabel":""
+   score = 5  # atau hasil perhitungan score lu
+   return {
+        "Time": now_wib(),
+        "CreatedAt": datetime.now(timezone.utc).isoformat(),
+        "Symbol": symbol,
+        "Phase": "AKUMULASI_KUAT",
+        "Score": score,
+        "Rating": score_to_rating(score),
+        "Entry": round(entry,6),
+        "SL": round(sl,6),
+        "TP1": round(entry+risk*TP1_R,6),
+        "TP2": round(entry+risk*TP2_R,6),
+        "Status": "OPEN",
+        "Label": "NEW",
+        "AutoLabel": ""
     }
+
 
 # =====================================================
 # CHART
@@ -458,37 +460,65 @@ with tab2:
 
 
 with tab3:
-    df_r=load_trade_results()
-    if len(df_r)<10:
-        st.warning("Trade data belum cukup")
+    df_trades = load_trade_results()
+    df_signals = load_signal_history()
+
+    # join trade dengan phase signal
+    merged = df_trades.merge(
+        df_signals[["Symbol","Phase"]],
+        on="Symbol",
+        how="left"
+    )
+
+    # FILTER AKUMULASI_KUAT SAJA
+    df_mc = merged[merged["Phase"] == "AKUMULASI_KUAT"]
+
+    if len(df_mc) < 10:
+        st.warning("Trade AKUMULASI_KUAT belum cukup untuk Monte Carlo (min 10).")
     else:
-        r=df_r["R"].values
-        risk=st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
-        trades=st.slider("Trades",50,500,300)
+        r = df_mc["R"].values
+
+        risk = st.slider("Risk / Trade (%)", 0.2, 3.0, 1.0) / 100
+        trades = st.slider("Trades / Simulation", 50, 500, 300)
 
         if st.button("🎲 Run Monte Carlo"):
-            curves=[]
+            curves = []
+
             for _ in range(500):
-                bal=10000; eq=[bal]
+                bal = 10000
+                eq = [bal]
                 for _ in range(trades):
-                    bal+=bal*risk*np.random.choice(r)
+                    bal += bal * risk * np.random.choice(r)
                     eq.append(bal)
                 curves.append(eq)
-            curves=np.array(curves)
 
-            st.metric("Median Balance",f"${np.median(curves[:,-1]):,.0f}")
-            st.metric("Risk of Ruin",f"{(curves[:,-1]<5000).mean()*100:.2f}%")
+            curves = np.array(curves)
 
-            fig=go.Figure()
-            for i in range(min(30,len(curves))):
-                fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3,showlegend=False))
-            fig.update_layout(template="plotly_dark",height=400)
-            st.plotly_chart(fig,use_container_width=True)
+            st.metric("Median Balance", f"${np.median(curves[:,-1]):,.0f}")
+            st.metric(
+                "Risk of Ruin (< $5k)",
+                f"{(curves[:,-1] < 5000).mean() * 100:.2f}%"
+            )
+
+            fig = go.Figure()
+            for i in range(min(30, len(curves))):
+                fig.add_trace(
+                    go.Scatter(
+                        y=curves[i],
+                        mode="lines",
+                        opacity=0.3,
+                        showlegend=False
+                    )
+                )
+            fig.update_layout(template="plotly_dark", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+
 
 with tab4:
     if not DEBUG_LOG:
         st.info("Belum ada debug data")
     else:
         st.dataframe(pd.DataFrame(DEBUG_LOG),use_container_width=True)
+
 
 
