@@ -212,22 +212,61 @@ def calculate_score(df4h, df1d):
 # =====================================================
 # AUTO LABEL ENGINE
 # =====================================================
-def auto_label(row, price):
-    if row["Status"] in ["TP2 HIT","SL HIT","BE HIT"]:
+def auto_label(row, price, df4h=None):
+    """
+    Auto label engine with downgrade logic
+    """
+
+    # =========================
+    # FINAL STATUS (LOCK)
+    # =========================
+    if row["Status"] in ["TP2 HIT", "SL HIT", "BE HIT"]:
         return "NO REENTRY"
 
-    entry=row["Entry"]; sl=row["SL"]
+    entry = row["Entry"]
+    sl = row["SL"]
+    tp1 = row["TP1"]
 
+    # =========================
+    # HARD STOP
+    # =========================
     if price < sl:
         return "NO REENTRY"
 
-    if abs(price-entry)/entry <= 0.003:
+    # =========================
+    # RETEST ZONE (±0.3%)
+    # =========================
+    if abs(price - entry) / entry <= 0.003:
         return "RETEST"
 
+    # =========================
+    # HOLD LOGIC
+    # =========================
     if price > entry:
+
+        # 🚨 DOWNGRADE RULE 1:
+        # Harga sudah terlalu jauh (> +6%)
+        if (price - entry) / entry >= 0.06:
+            return "NO REENTRY"
+
+        # 🚨 DOWNGRADE RULE 2:
+        # Sudah dekat TP1 tapi gagal break
+        if price >= tp1 * 0.95 and price < tp1:
+            return "NO REENTRY"
+
+        # 🚨 DOWNGRADE RULE 3:
+        # EMA20 4H breakdown (butuh df4h)
+        if df4h is not None:
+            ema20 = df4h.close.ewm(span=20).mean()
+            if price < ema20.iloc[-1]:
+                return "NO REENTRY"
+
         return "HOLD"
 
-    return ""
+    # =========================
+    # DEFAULT
+    # =========================
+    return "WAIT"
 
 def update_auto_labels(okx):
     df = load_signal_history()
@@ -237,7 +276,11 @@ def update_auto_labels(okx):
             price = okx.fetch_ticker(row["Symbol"])["last"]
         except:
             continue
-        new = auto_label(row, price)
+        df4h = pd.DataFrame(
+        okx.fetch_ohlcv(row["Symbol"], ENTRY_TF, limit=50),
+        columns=["t","open","high","low","close","volume"]
+        )
+new = auto_label(row, price, df4h)
         if row.get("AutoLabel") != new:
             df.at[i,"AutoLabel"]=new
             changed=True
@@ -628,6 +671,7 @@ with tab4:
         st.info("Belum ada debug data")
     else:
         st.dataframe(pd.DataFrame(DEBUG_LOG),use_container_width=True)
+
 
 
 
