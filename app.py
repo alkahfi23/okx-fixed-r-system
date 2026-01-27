@@ -7,7 +7,6 @@ import os
 import requests
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # =====================================================
 # CONFIG
@@ -58,14 +57,20 @@ def get_okx():
 # =====================================================
 def load_signal_history():
     if not os.path.exists(SIGNAL_LOG_FILE):
-        df = pd.DataFrame(columns=[
+        pd.DataFrame(columns=[
             "Time","CreatedAt","Symbol",
             "Phase","Score","Rating",
             "Entry","SL","TP1","TP2",
             "Status","Label","AutoLabel"
-        ])
-        df.to_csv(SIGNAL_LOG_FILE, index=False)
+        ]).to_csv(SIGNAL_LOG_FILE, index=False)
     return pd.read_csv(SIGNAL_LOG_FILE)
+
+def load_trade_results():
+    if not os.path.exists(TRADE_RESULT_FILE):
+        pd.DataFrame(columns=["Time","Symbol","R"]).to_csv(
+            TRADE_RESULT_FILE, index=False
+        )
+    return pd.read_csv(TRADE_RESULT_FILE)
 
 def save_signal(sig):
     if sig["Phase"] != "AKUMULASI_KUAT":
@@ -76,20 +81,13 @@ def save_signal(sig):
     df = pd.concat([df, pd.DataFrame([sig])], ignore_index=True)
     df.to_csv(SIGNAL_LOG_FILE, index=False)
 
-def load_trade_results():
-    if not os.path.exists(TRADE_RESULT_FILE):
-        pd.DataFrame(columns=["Time","Symbol","R"]).to_csv(
-            TRADE_RESULT_FILE, index=False
-        )
-    return pd.read_csv(TRADE_RESULT_FILE)
-
 # =====================================================
 # RESTORE CSV
 # =====================================================
-def restore_signal_csv(uploaded_file):
-    if uploaded_file is None:
+def restore_signal_csv(file):
+    if file is None:
         return
-    old = pd.read_csv(uploaded_file)
+    old = pd.read_csv(file)
     cur = load_signal_history()
     for c in cur.columns:
         if c not in old.columns:
@@ -97,17 +95,17 @@ def restore_signal_csv(uploaded_file):
     merged = pd.concat([cur, old[cur.columns]], ignore_index=True)
     merged.drop_duplicates(subset=["Symbol","Entry","CreatedAt"], inplace=True)
     merged.to_csv(SIGNAL_LOG_FILE, index=False)
-    st.success("✅ Signal history restored")
+    st.success("✅ Signal history berhasil direstore")
 
-def restore_trade_csv(uploaded_file):
-    if uploaded_file is None:
+def restore_trade_csv(file):
+    if file is None:
         return
-    old = pd.read_csv(uploaded_file)
+    old = pd.read_csv(file)
     cur = load_trade_results()
     merged = pd.concat([cur, old], ignore_index=True)
     merged.drop_duplicates(subset=["Symbol","Time","R"], inplace=True)
     merged.to_csv(TRADE_RESULT_FILE, index=False)
-    st.success("✅ Trade results restored")
+    st.success("✅ Trade result berhasil direstore")
 
 # =====================================================
 # INDICATORS
@@ -122,6 +120,7 @@ def supertrend(df, period, mult):
 
     stl = pd.Series(index=df.index,dtype=float)
     trend = pd.Series(index=df.index,dtype=int)
+
     trend.iloc[0] = 1
     stl.iloc[0] = lower.iloc[0]
 
@@ -136,12 +135,12 @@ def supertrend(df, period, mult):
     return stl, trend
 
 def volume_osc(v,f,s):
-    return (v.ewm(span=f).mean()-v.ewm(span=s).mean())/v.ewm(span=s).mean()*100
+    return (v.ewm(span=f).mean()-v.ewm(span=s).mean()) / v.ewm(span=s).mean() * 100
 
 def accumulation_distribution(df):
-    h,l,c,v=df.high,df.low,df.close,df.volume
-    mfm=((c-l)-(h-c))/(h-l)
-    mfm=mfm.replace([np.inf,-np.inf],0).fillna(0)
+    h,l,c,v = df.high,df.low,df.close,df.volume
+    mfm = ((c-l)-(h-c))/(h-l)
+    mfm = mfm.replace([np.inf,-np.inf],0).fillna(0)
     return (mfm*v).cumsum()
 
 def find_support(df, lb):
@@ -423,4 +422,7 @@ with tab3:
             st.plotly_chart(fig,use_container_width=True)
 
 with tab4:
-    st.dataframe(pd.DataFrame(DEBUG_LOG)) if DEBUG_LOG else st.info("Belum ada debug")
+    if DEBUG_LOG:
+        st.dataframe(pd.DataFrame(DEBUG_LOG),use_container_width=True)
+    else:
+        st.info("Belum ada debug")
