@@ -394,28 +394,32 @@ with tab1:
     st.subheader("📡 Market Scanner")
 
     if st.button("🔍 Scan Market"):
-        syms = get_okx_symbols()
-        prog = st.progress(0)
-        found = []
-        DEBUG_LOG.clear()
+    syms = get_okx_symbols()
+    prog = st.progress(0)
+    found = []
+    DEBUG_LOG.clear()
 
-        for i, s in enumerate(syms, 1):
-            sig = check_signal(okx, s, DEBUG_LOG)
-            if sig:
-                save_signal(sig)
-                found.append(sig)
+    status_box = st.empty()
+    info_box = st.empty()
 
-            prog.progress(i / len(syms))
-            time.sleep(RATE_LIMIT_DELAY)
+    total = len(syms)
 
-        prog.empty()
+    for i, s in enumerate(syms, 1):
+        status_box.info(f"🔄 Scanning **{s}**  ({i}/{total})")
 
-        if found:
-            st.success(f"🔥 {len(found)} SIGNAL DITEMUKAN")
-            st.dataframe(pd.DataFrame(found), use_container_width=True)
-        else:
-            st.warning("Tidak ada setup valid saat ini.")
+        sig = check_signal(okx, s, DEBUG_LOG)
+        if sig:
+            save_signal(sig)
+            found.append(sig)
+            info_box.success(f"🔥 Signal found: **{sig['Symbol']}** | Score {sig['Score']}")
 
+        prog.progress(i / total)
+        time.sleep(RATE_LIMIT_DELAY)
+
+    status_box.empty()
+    info_box.empty()
+    prog.empty()
+        
 # =====================================================
 # TAB 2 — HISTORY & RESTORE
 # =====================================================
@@ -535,6 +539,7 @@ with tab4:
         )
     else:
         st.info("Belum ada debug log.")
+
 
 
 
