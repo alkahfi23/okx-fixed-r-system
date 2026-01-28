@@ -237,35 +237,43 @@ def update_auto_labels(okx):
         df.to_csv(SIGNAL_LOG_FILE,index=False)
 
 def update_trade_outcomes(okx):
-    df=load_signal_history()
-    res=load_trade_results()
-    updated=False
+    df = load_signal_history()
+    res = load_trade_results()
+    updated = False
 
-    for i,row in df.iterrows():
-        if row["Status"]!="OPEN": continue
+    for i, row in df.iterrows():
+        if row["Status"] != "OPEN":
+            continue
         try:
-            price=okx.fetch_ticker(row["Symbol"])["last"]
+            price = okx.fetch_ticker(row["Symbol"])["last"]
         except:
             continue
 
-        r=None; status=None
-        if price<=row["SL"]:
-            r,status=-1,"SL HIT"
-        elif price>=row["TP2"]:
-            r,status=TP2_R,"TP2 HIT"
-        elif price>=row["TP1"]:
-            r,status=TP1_R/2,"TP1 HIT"
+        r = None
+        status = None
+
+        if price <= row["SL"]:
+            r, status = -1, "SL HIT"
+            df.at[i, "AutoLabel"] = "INVALIDATED"
+
+        elif price >= row["TP2"]:
+            r, status = TP2_R, "TP2 HIT"
+
+        elif price >= row["TP1"]:
+            r, status = TP1_R / 2, "TP1 HIT"
 
         if r is not None:
-            df.at[i,"Status"]=status
-            res=pd.concat([res,pd.DataFrame([{
-                "Time":now_wib(),"Symbol":row["Symbol"],"R":r
-            }])],ignore_index=True)
-            updated=True
+            df.at[i, "Status"] = status
+            res = pd.concat([res, pd.DataFrame([{
+                "Time": now_wib(),
+                "Symbol": row["Symbol"],
+                "R": r
+            }])], ignore_index=True)
+            updated = True
 
     if updated:
-        df.to_csv(SIGNAL_LOG_FILE,index=False)
-        res.to_csv(TRADE_RESULT_FILE,index=False)
+        df.to_csv(SIGNAL_LOG_FILE, index=False)
+        res.to_csv(TRADE_RESULT_FILE, index=False)
 
 # =====================================================
 # SYMBOL FETCH (UNCHANGED)
@@ -516,3 +524,4 @@ with tab4:
         )
     else:
         st.info("Belum ada debug log.")
+
