@@ -218,23 +218,33 @@ def auto_label(row, price, df4h):
 # UPDATE AUTO LABEL & TRADE OUTCOME (UNCHANGED + PATCH)
 # =====================================================
 def update_auto_labels(okx):
-    df=load_signal_history()
-    changed=False
-    for i,row in df.iterrows():
+    df = load_signal_history()
+    changed = False
+
+    for i, row in df.iterrows():
         try:
-            price=okx.fetch_ticker(row["Symbol"])["last"]
-            df4h=pd.DataFrame(
-                okx.fetch_ohlcv(row["Symbol"],ENTRY_TF,limit=50),
+            price = okx.fetch_ticker(row["Symbol"])["last"]
+            df4h = pd.DataFrame(
+                okx.fetch_ohlcv(row["Symbol"], ENTRY_TF, limit=50),
                 columns=["t","open","high","low","close","volume"]
             )
-            new=auto_label(row,price,df4h)
-            if row["AutoLabel"]!=new:
-                df.at[i,"AutoLabel"]=new
-                changed=True
+
+            new = auto_label(row, price, df4h)
+
+            if row["AutoLabel"] != new:
+                df.at[i, "AutoLabel"] = new
+
+                # === PATCH INTI ===
+                if new in ["NO REENTRY", "INVALIDATED"] and row["Status"] == "OPEN":
+                    df.at[i, "Status"] = "CLOSED"
+
+                changed = True
+
         except:
             pass
+
     if changed:
-        df.to_csv(SIGNAL_LOG_FILE,index=False)
+        df.to_csv(SIGNAL_LOG_FILE, index=False)
 
 def update_trade_outcomes(okx):
     df = load_signal_history()
@@ -524,4 +534,5 @@ with tab4:
         )
     else:
         st.info("Belum ada debug log.")
+
 
