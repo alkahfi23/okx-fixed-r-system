@@ -202,7 +202,7 @@ def auto_label(row, price, df4h):
     return "WAIT"
 
 # =====================================================
-# UPDATE LABEL & STATUS (FINAL FIX)
+# UPDATE LABEL & STATUS (FINAL)
 # =====================================================
 def update_auto_labels(okx):
     df = load_signal_history()
@@ -409,11 +409,14 @@ with tab3:
         if st.button("🎲 Run Monte Carlo"):
             curves=[]
             for _ in range(500):
-                bal=10000; eq=[bal]
+                bal=10000
+                eq=[bal]
                 for _ in range(trades):
                     bal+=bal*risk*np.random.choice(r)
                     eq.append(bal)
-                curves=np.array(curves)
+                curves.append(eq)
+
+            curves=np.array(curves)
 
             st.metric("Median Balance",f"${np.median(curves[:,-1]):,.0f}")
             st.metric("Risk of Ruin (<$5k)",f"{(curves[:,-1]<5000).mean()*100:.2f}%")
