@@ -231,13 +231,14 @@ def update_auto_labels(okx):
 
             new = auto_label(row, price, df4h)
 
+            # update autolabel jika berubah
             if row["AutoLabel"] != new:
                 df.at[i, "AutoLabel"] = new
+                changed = True
 
-                # === PATCH INTI ===
-                if new in ["NO REENTRY", "INVALIDATED"] and row["Status"] == "OPEN":
-                    df.at[i, "Status"] = "CLOSED"
-
+            # === PATCH FINAL: SINKRON STATUS TANPA SYARAT ===
+            if row["Status"] == "OPEN" and df.at[i, "AutoLabel"] in ["NO REENTRY", "INVALIDATED"]:
+                df.at[i, "Status"] = "CLOSED"
                 changed = True
 
         except:
@@ -534,5 +535,6 @@ with tab4:
         )
     else:
         st.info("Belum ada debug log.")
+
 
 
