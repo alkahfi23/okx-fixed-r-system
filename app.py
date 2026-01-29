@@ -828,21 +828,41 @@ tab1,tab2,tab3,tab4,tab5 = st.tabs([
 with tab1:
     st.subheader("📡 Institutional Market Scanner")
 
+    # =========================
+    # 🔄 RESTORE OPEN SIGNAL
+    # =========================
+    history_df = load_signal_history()
+    restored = history_df[
+        (history_df["Status"] == "OPEN") &
+        (history_df["Mode"] == MODE)
+    ]
+
+    found = restored.to_dict("records")
+
+    st.info(
+        f"🔄 Restore {len(restored)} OPEN signal dari history "
+        f"({MODE})"
+    )
+
+    if len(restored) > 0:
+        st.dataframe(
+            restored.sort_values("Time", ascending=False),
+            use_container_width=True
+        )
+
+    st.divider()
+
+    # =========================
+    # 🚀 START SCAN
+    # =========================
     if st.button("🔍 Scan Market"):
-        # =========================
-        # SYMBOL LIST
-        # =========================
         symbols = [
             s for s, m in okx.markets.items()
             if m.get("spot") and s.endswith("/USDT")
         ][:MAX_SCAN_SYMBOLS]
 
         total = len(symbols)
-        found = []
 
-        # =========================
-        # UI ELEMENTS
-        # =========================
         progress = st.progress(0.0)
         status_box = st.empty()
         counter_box = st.empty()
@@ -864,13 +884,10 @@ with tab1:
                 f"⏱ Elapsed: {elapsed:.1f}s | ETA: {eta:.1f}s"
             )
 
-            # =========================
-            # CHECK SIGNAL
-            # =========================
             sig = check_signal(okx, s, MODE, BALANCE)
 
             # =========================
-            # HANDLE RESULT
+            # HANDLE SIGNAL
             # =========================
             if not sig:
                 pass
@@ -896,10 +913,13 @@ with tab1:
                 })
 
                 found.append(sig)
-                counter_box.success(f"🔥 Trade Signal: {len(found)}")
+
+                counter_box.success(
+                    f"🔥 Total OPEN Signal: {len(found)}"
+                )
 
                 table_box.dataframe(
-                    pd.DataFrame(found).tail(5),
+                    pd.DataFrame(found).tail(10),
                     use_container_width=True
                 )
 
@@ -910,7 +930,8 @@ with tab1:
 
             elif sig["SignalType"] == "REGIME_SHIFT":
                 status_box.error(
-                    f"🚨 REGIME SHIFT {s}\n{sig['Details']['Message']}"
+                    f"🚨 REGIME SHIFT {s}\n"
+                    f"{sig['Details']['Message']}"
                 )
 
             progress.progress(i / total)
@@ -919,15 +940,21 @@ with tab1:
         # =========================
         # FINAL OUTPUT
         # =========================
-        status_box.success(f"✅ Scan selesai | Total trade signal: {len(found)}")
+        status_box.success(
+            f"✅ Scan selesai | Total OPEN signal: {len(found)}"
+        )
         progress.empty()
 
         if found:
-            st.subheader("📌 Final Trade Signals (Institutional Grade)")
-            st.dataframe(pd.DataFrame(found), use_container_width=True)
+            st.subheader("📌 ALL ACTIVE SIGNALS (RESTORED + NEW)")
+            st.dataframe(
+                pd.DataFrame(found).sort_values(
+                    "Time", ascending=False
+                ),
+                use_container_width=True
+            )
         else:
             st.warning("Tidak ada setup A+ institutional ditemukan.")
-
 with tab2:
     df = load_signal_history()
     st.dataframe(df[df["Mode"]=="SPOT"].sort_values("Time", ascending=False),
@@ -1017,6 +1044,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
