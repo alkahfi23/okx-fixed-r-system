@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import time
 import os
-import requests
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 
@@ -30,14 +29,13 @@ ZONE_BUFFER = 0.01
 TP1_R = 0.8
 TP2_R = 2.0
 
-MIN_USDT_VOLUME = 2_000_000
 RATE_LIMIT_DELAY = 0.15
 MAX_SCAN_SYMBOLS = 120
 
 # ===== FUTURES (LONG ONLY – 100x SAFE MODE) =====
-FUTURES_RISK_PCT = 0.005      # 0.5% real risk
-FUTURES_LEVERAGE = 100        # 🔥 100x
-FUTURES_MAX_RISK = 0.015      # ⛔ max SL 1.5%
+FUTURES_RISK_PCT = 0.005     # 0.5% real risk
+FUTURES_LEVERAGE = 100
+FUTURES_MAX_RISK = 0.015    # SL max 1.5%
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIGNAL_LOG_FILE = os.path.join(BASE_DIR, "signal_history.csv")
@@ -56,26 +54,12 @@ def now_wib():
 # =====================================================
 @st.cache_resource
 def get_okx():
-    return ccxt.okx({"enableRateLimit": True})
+    ex = ccxt.okx({"enableRateLimit": True})
+    ex.load_markets()
+    return ex
 
 # =====================================================
-# FUTURES RISK ENGINE (100x SAFE)
-# =====================================================
-def calculate_futures_position(balance, entry, sl):
-    stop_pct = abs(entry - sl) / entry
-    if stop_pct <= 0 or stop_pct > FUTURES_MAX_RISK:
-        return 0
-
-    risk_amount = balance * FUTURES_RISK_PCT
-    pos_value = risk_amount / stop_pct
-
-    max_position = balance * FUTURES_LEVERAGE * 0.5
-    pos_value = min(pos_value, max_position)
-
-    return round(pos_value, 2)
-
-# =====================================================
-# FILE HANDLER
+# FILE HANDLER (AUTO MIGRATION)
 # =====================================================
 def load_signal_history():
     cols = [
@@ -84,21 +68,19 @@ def load_signal_history():
         "Status","Label","AutoLabel",
         "Mode","Direction","PositionSize"
     ]
-
     if not os.path.exists(SIGNAL_LOG_FILE):
         pd.DataFrame(columns=cols).to_csv(SIGNAL_LOG_FILE, index=False)
 
     df = pd.read_csv(SIGNAL_LOG_FILE)
 
-    # 🔥 AUTO MIGRATION (FIX KEYERROR)
     for c in cols:
         if c not in df.columns:
             if c == "Mode":
-                df[c] = "SPOT"          # default aman
+                df[c] = "SPOT"
             elif c == "Direction":
                 df[c] = "LONG"
             elif c == "PositionSize":
-                df[c] = 0
+                df[c] = 0.0
             else:
                 df[c] = ""
 
@@ -108,7 +90,7 @@ def load_signal_history():
 def load_trade_results():
     if not os.path.exists(TRADE_RESULT_FILE):
         pd.DataFrame(columns=["Time","Symbol","R"]).to_csv(
-            TRADE_RESULT_FILE,index=False
+            TRADE_RESULT_FILE, index=False
         )
     return pd.read_csv(TRADE_RESULT_FILE)
 
@@ -123,80 +105,87 @@ def load_futures_trades():
 
 def save_signal(sig):
     df = load_signal_history()
-    if ((df["Symbol"]==sig["Symbol"]) &
-        (df["Status"]=="OPEN") &
-        (df["Mode"]=="SPOT")).any():
+    if ((df["Symbol"] == sig["Symbol"]) &
+        (df["Status"] == "OPEN") &
+        (df["Mode"] == sig["Mode"])).any():
         return
-    df = pd.concat([df,pd.DataFrame([sig])],ignore_index=True)
-    df.to_csv(SIGNAL_LOG_FILE,index=False)
+    df = pd.concat([df, pd.DataFrame([sig])], ignore_index=True)
+    df.to_csv(SIGNAL_LOG_FILE, index=False)
 
 # =====================================================
 # INDICATORS
 # =====================================================
 def supertrend(df, period, mult):
     h,l,c = df.high,df.low,df.close
-    tr = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-    atr = tr.ewm(span=period,adjust=False).mean()
+    tr = pd.concat([
+        h-l,
+        (h-c.shift()).abs(),
+        (l-c.shift()).abs()
+    ], axis=1).max(axis=1)
+
+    atr = tr.ewm(span=period, adjust=False).mean()
     hl2 = (h+l)/2
     upper = hl2 + mult*atr
     lower = hl2 - mult*atr
 
-    stl = pd.Series(index=df.index,dtype=float)
-    trend = pd.Series(index=df.index,dtype=int)
-    trend.iloc[0]=1
-    stl.iloc[0]=lower.iloc[0]
+    stl = pd.Series(index=df.index, dtype=float)
+    trend = pd.Series(index=df.index, dtype=int)
 
-    for i in range(1,len(df)):
-        if trend.iloc[i-1]==1:
-            stl.iloc[i]=max(lower.iloc[i],stl.iloc[i-1])
-            trend.iloc[i]=1 if c.iloc[i]>stl.iloc[i] else -1
+    trend.iloc[0] = 1
+    stl.iloc[0] = lower.iloc[0]
+
+    for i in range(1, len(df)):
+        if trend.iloc[i-1] == 1:
+            stl.iloc[i] = max(lower.iloc[i], stl.iloc[i-1])
+            trend.iloc[i] = 1 if c.iloc[i] > stl.iloc[i] else -1
         else:
-            stl.iloc[i]=min(upper.iloc[i],stl.iloc[i-1])
-            trend.iloc[i]=-1 if c.iloc[i]<stl.iloc[i] else 1
-    return stl,trend
+            stl.iloc[i] = min(upper.iloc[i], stl.iloc[i-1])
+            trend.iloc[i] = -1 if c.iloc[i] < stl.iloc[i] else 1
+
+    return stl, trend
 
 def volume_osc(v,f,s):
-    return (v.ewm(span=f).mean()-v.ewm(span=s).mean())/v.ewm(span=s).mean()*100
+    return (v.ewm(span=f).mean() - v.ewm(span=s).mean()) / v.ewm(span=s).mean() * 100
 
 def accumulation_distribution(df):
     h,l,c,v = df.high,df.low,df.close,df.volume
-    mfm=((c-l)-(h-c))/(h-l)
-    mfm=mfm.replace([np.inf,-np.inf],0).fillna(0)
+    mfm = ((c-l)-(h-c))/(h-l)
+    mfm = mfm.replace([np.inf,-np.inf],0).fillna(0)
     return (mfm*v).cumsum()
 
-def find_support(df,lb):
-    lv=[]
-    for i in range(lb,len(df)-lb):
-        if df.low.iloc[i]==min(df.low.iloc[i-lb:i+lb+1]):
-            lv.append(df.low.iloc[i])
-    return sorted(set(lv))
+def find_support(df, lb):
+    levels=[]
+    for i in range(lb, len(df)-lb):
+        if df.low.iloc[i] == min(df.low.iloc[i-lb:i+lb+1]):
+            levels.append(df.low.iloc[i])
+    return sorted(set(levels))
 
 # =====================================================
 # SCORE
 # =====================================================
-def calculate_score(df4h,df1d):
-    s=0
-    ema20=df4h.close.ewm(span=20).mean()
-    ema50=df4h.close.ewm(span=50).mean()
-    ema200=df1d.close.ewm(span=200).mean()
-    p=df4h.close.iloc[-1]
+def calculate_score(df4h, df1d):
+    score = 0
+    ema20 = df4h.close.ewm(span=20).mean()
+    ema50 = df4h.close.ewm(span=50).mean()
+    ema200 = df1d.close.ewm(span=200).mean()
+    price = df4h.close.iloc[-1]
 
-    if p>ema20.iloc[-1]: s+=1
-    if ema20.iloc[-1]>ema50.iloc[-1]: s+=1
-    if ema50.iloc[-1]>ema200.iloc[-1]: s+=1
-    if p>ema200.iloc[-1]: s+=1
+    if price > ema20.iloc[-1]: score+=1
+    if ema20.iloc[-1] > ema50.iloc[-1]: score+=1
+    if ema50.iloc[-1] > ema200.iloc[-1]: score+=1
+    if price > ema200.iloc[-1]: score+=1
 
-    vo=volume_osc(df4h.volume,VO_FAST,VO_SLOW).iloc[-1]
-    if vo>3: s+=1
-    if vo>10: s+=1
-    if vo>20: s+=1
+    vo = volume_osc(df4h.volume, VO_FAST, VO_SLOW).iloc[-1]
+    if vo > 3: score+=1
+    if vo > 10: score+=1
+    if vo > 20: score+=1
 
-    adl=accumulation_distribution(df4h)
-    if adl.iloc[-1]>adl.iloc[-5]: s+=1
-    if adl.iloc[-1]>adl.iloc[-10]: s+=1
-    if adl.iloc[-1]>adl.iloc[-20]: s+=1
+    adl = accumulation_distribution(df4h)
+    if adl.iloc[-1] > adl.iloc[-5]: score+=1
+    if adl.iloc[-1] > adl.iloc[-10]: score+=1
+    if adl.iloc[-1] > adl.iloc[-20]: score+=1
 
-    return s
+    return score
 
 # =====================================================
 # AUTO LABEL (SPOT ONLY)
@@ -228,24 +217,24 @@ def auto_label(row, price, df4h):
     return "WAIT"
 
 def update_auto_labels(okx):
-    df=load_signal_history()
+    df = load_signal_history()
     changed=False
 
     for i,row in df.iterrows():
         if row["Mode"]!="SPOT" or row["Status"]!="OPEN":
             continue
         try:
-            price=okx.fetch_ticker(row["Symbol"])["last"]
-            df4h=pd.DataFrame(
-                okx.fetch_ohlcv(row["Symbol"],ENTRY_TF,limit=50),
+            price = okx.fetch_ticker(row["Symbol"])["last"]
+            df4h = pd.DataFrame(
+                okx.fetch_ohlcv(row["Symbol"], ENTRY_TF, limit=50),
                 columns=["t","open","high","low","close","volume"]
             )
-            new=auto_label(row,price,df4h)
-            if row["AutoLabel"]!=new:
-                df.at[i,"AutoLabel"]=new
+            new = auto_label(row, price, df4h)
+            if row["AutoLabel"] != new:
+                df.at[i,"AutoLabel"] = new
                 changed=True
             if new in ["NO REENTRY","INVALIDATED"]:
-                df.at[i,"Status"]="CLOSED"
+                df.at[i,"Status"] = "CLOSED"
                 changed=True
         except:
             pass
@@ -254,29 +243,50 @@ def update_auto_labels(okx):
         df.to_csv(SIGNAL_LOG_FILE,index=False)
 
 # =====================================================
+# FUTURES RISK ENGINE
+# =====================================================
+def calculate_futures_position(balance, entry, sl):
+    stop_pct = abs(entry - sl) / entry
+    if stop_pct <= 0 or stop_pct > FUTURES_MAX_RISK:
+        return 0.0
+    risk_amount = balance * FUTURES_RISK_PCT
+    pos_value = risk_amount / stop_pct
+    max_position = balance * FUTURES_LEVERAGE * 0.5
+    return round(min(pos_value, max_position),2)
+
+# =====================================================
 # SIGNAL LOGIC
 # =====================================================
-def check_signal(okx,symbol,mode,balance):
-    df4h=pd.DataFrame(okx.fetch_ohlcv(symbol,ENTRY_TF,limit=LIMIT_4H),
-                      columns=["t","open","high","low","close","volume"])
-    df1d=pd.DataFrame(okx.fetch_ohlcv(symbol,DAILY_TF,limit=LIMIT_1D),
-                      columns=["t","open","high","low","close","volume"])
+def check_signal(okx, symbol, mode, balance):
+    try:
+        df4h = pd.DataFrame(
+            okx.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
+            columns=["t","open","high","low","close","volume"]
+        )
+        df1d = pd.DataFrame(
+            okx.fetch_ohlcv(symbol, DAILY_TF, limit=LIMIT_1D),
+            columns=["t","open","high","low","close","volume"]
+        )
+    except:
+        return None
 
-    stl,trend=supertrend(df4h,ATR_PERIOD,MULTIPLIER)
-    if trend.iloc[-1]!=1: return None
+    stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
+    if trend.iloc[-1] != 1:
+        return None
 
-    vo=volume_osc(df4h.volume,VO_FAST,VO_SLOW)
-    if vo.iloc[-1]<VO_MIN: return None
+    if volume_osc(df4h.volume, VO_FAST, VO_SLOW).iloc[-1] < VO_MIN:
+        return None
 
-    adl=accumulation_distribution(df4h)
-    if adl.iloc[-1]<=adl.iloc[-10]: return None
+    adl = accumulation_distribution(df4h)
+    if adl.iloc[-1] <= adl.iloc[-10]:
+        return None
 
-    ema200=df1d.close.ewm(span=200).mean()
-    if df1d.close.iloc[-1]<ema200.iloc[-1]: return None
+    ema200 = df1d.close.ewm(span=200).mean()
+    if df1d.close.iloc[-1] < ema200.iloc[-1]:
+        return None
 
     score = calculate_score(df4h, df1d)
 
-    # 🔥 SCORE FILTER
     if mode == "FUTURES":
         if score <= 8:
             return None
@@ -284,62 +294,65 @@ def check_signal(okx,symbol,mode,balance):
         if score < 6:
             return None
 
-    entry=df4h.close.iloc[-1]
-    ema20=df4h.close.ewm(span=20).mean().iloc[-1]
-    if entry>ema20*1.03: return None
+    entry = df4h.close.iloc[-1]
+    ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
+    if entry > ema20 * 1.03:
+        return None
 
-    supports=[s for s in find_support(df1d,SR_LOOKBACK) if s<entry]
-    if not supports: return None
+    supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
+    if not supports:
+        return None
 
-    sl=max(supports)*(1-ZONE_BUFFER)
-    risk=(entry-sl)/entry
-    if risk<=0.002 or risk>=FUTURES_MAX_RISK: return None
+    sl = max(supports) * (1 - ZONE_BUFFER)
+    risk = (entry - sl) / entry
+    if risk <= 0.002 or risk >= FUTURES_MAX_RISK:
+        return None
 
-    pos=0
-    if mode=="FUTURES":
-        pos=calculate_futures_position(balance,entry,sl)
+    pos_size = 0.0
+    if mode == "FUTURES":
+        pos_size = calculate_futures_position(balance, entry, sl)
 
     return {
-        "Time":now_wib(),
-        "CreatedAt":datetime.now(timezone.utc).isoformat(),
-        "Symbol":symbol,
-        "Phase":"AKUMULASI_KUAT",
-        "Score":score,
-        "Rating":"⭐"*score,
-        "Entry":round(entry,6),
-        "SL":round(sl,6),
-        "TP1":round(entry+(entry-sl)*TP1_R,6),
-        "TP2":round(entry+(entry-sl)*TP2_R,6),
-        "Status":"OPEN",
-        "Label":"NEW",
-        "AutoLabel":"WAIT",
-        "Mode":mode,
-        "Direction":"LONG",
-        "PositionSize":pos
+        "Time": now_wib(),
+        "CreatedAt": datetime.now(timezone.utc).isoformat(),
+        "Symbol": symbol,
+        "Phase": "AKUMULASI_KUAT",
+        "Score": score,
+        "Rating": "⭐"*score,
+        "Entry": round(entry,6),
+        "SL": round(sl,6),
+        "TP1": round(entry+(entry-sl)*TP1_R,6),
+        "TP2": round(entry+(entry-sl)*TP2_R,6),
+        "Status": "OPEN",
+        "Label": "NEW",
+        "AutoLabel": "WAIT",
+        "Mode": mode,
+        "Direction": "LONG",
+        "PositionSize": pos_size
     }
 
 # =====================================================
 # UI
 # =====================================================
-st.set_page_config("OPSI A PRO — FINAL",layout="wide")
+st.set_page_config("OPSI A PRO — FINAL CLEAN", layout="wide")
 st.title("🚀 OPSI A PRO — SPOT + FUTURES (LONG 100x)")
 
-okx=get_okx()
+okx = get_okx()
 update_auto_labels(okx)
 
-MODE=st.radio("🧭 Trading Mode",["SPOT","FUTURES"],horizontal=True)
-BALANCE=st.number_input("💰 Account Balance (USDT)",value=10000.0,step=100.0)
+MODE = st.radio("🧭 Trading Mode", ["SPOT","FUTURES"], horizontal=True)
+BALANCE = st.number_input("💰 Account Balance (USDT)", value=10000.0, step=100.0)
 
-if MODE=="FUTURES":
+if MODE == "FUTURES":
     st.warning(
-        "⚠️ FUTURES 100x ACTIVE\n"
-        "• Score ≥ 9 ONLY\n"
+        "⚠️ FUTURES 100x MODE\n"
+        "• Score ≥ 9 only\n"
         "• Max SL 1.5%\n"
         "• Risk real 0.5%\n"
-        "• Setup A+ saja"
+        "• A+ setup only"
     )
 
-tab1,tab2,tab3,tab4=st.tabs([
+tab1,tab2,tab3,tab4 = st.tabs([
     "📡 Scan",
     "📜 History SPOT",
     "🎲 Monte Carlo",
@@ -348,44 +361,41 @@ tab1,tab2,tab3,tab4=st.tabs([
 
 with tab1:
     if st.button("🔍 Scan Market"):
-        r=requests.get(
-            "https://www.okx.com/api/v5/market/tickers",
-            params={"instType":"SPOT"}
-        ).json()["data"]
-
-        syms=[s["instId"] for s in r
-              if s["instId"].endswith("-USDT")
-              and float(s["volCcy24h"])>=MIN_USDT_VOLUME][:MAX_SCAN_SYMBOLS]
+        symbols = [
+            s for s,m in okx.markets.items()
+            if m.get("spot") and s.endswith("/USDT")
+        ][:MAX_SCAN_SYMBOLS]
 
         found=[]
-        prog=st.progress(0)
-        for i,s in enumerate(syms,1):
-            sig=check_signal(okx,s,MODE,BALANCE)
+        prog = st.progress(0.0)
+        for i,s in enumerate(symbols,1):
+            sig = check_signal(okx, s, MODE, BALANCE)
             if sig:
                 save_signal(sig)
                 found.append(sig)
-            prog.progress(i/len(syms))
+            prog.progress(i/len(symbols))
             time.sleep(RATE_LIMIT_DELAY)
+
         prog.empty()
-        st.dataframe(pd.DataFrame(found),use_container_width=True)
+        st.dataframe(pd.DataFrame(found), use_container_width=True)
 
 with tab2:
-    df=load_signal_history()
-    df=df[df["Mode"]=="SPOT"].sort_values("Time",ascending=False)
-    st.dataframe(df,use_container_width=True)
+    df = load_signal_history()
+    st.dataframe(df[df["Mode"]=="SPOT"].sort_values("Time", ascending=False),
+                 use_container_width=True)
 
 with tab3:
-    tr=load_trade_results()
-    sig=load_signal_history()
-    mc=tr.merge(sig[["Symbol","Phase","Mode"]],on="Symbol",how="left")
-    mc=mc[(mc["Phase"]=="AKUMULASI_KUAT")&(mc["Mode"]=="SPOT")]
+    tr = load_trade_results()
+    sig = load_signal_history()
+    mc = tr.merge(sig[["Symbol","Phase","Mode"]], on="Symbol", how="left")
+    mc = mc[(mc["Phase"]=="AKUMULASI_KUAT") & (mc["Mode"]=="SPOT")]
 
-    if len(mc)<10:
+    if len(mc) < 10:
         st.warning("Trade SPOT belum cukup")
     else:
-        r=mc["R"].values
-        risk=st.slider("Risk / Trade (%)",0.2,3.0,1.0)/100
-        trades=st.slider("Trades / Simulation",50,500,300)
+        r = mc["R"].values
+        risk = st.slider("Risk / Trade (%)", 0.2, 3.0, 1.0)/100
+        trades = st.slider("Trades / Simulation", 50, 500, 300)
 
         if st.button("🎲 Run Monte Carlo"):
             curves=[]
@@ -393,29 +403,27 @@ with tab3:
                 bal=10000
                 eq=[bal]
                 for _ in range(trades):
-                    bal+=bal*risk*np.random.choice(r)
+                    bal += bal * risk * np.random.choice(r)
                     eq.append(bal)
                 curves.append(eq)
             curves=np.array(curves)
-            st.metric("Median Balance",f"${np.median(curves[:,-1]):,.0f}")
-            st.metric("Risk of Ruin (<$5k)",f"{(curves[:,-1]<5000).mean()*100:.2f}%")
+            st.metric("Median Balance", f"${np.median(curves[:,-1]):,.0f}")
+            st.metric("Risk of Ruin (<$5k)", f"{(curves[:,-1]<5000).mean()*100:.2f}%")
+
             fig=go.Figure()
             for i in range(min(30,len(curves))):
-                fig.add_trace(go.Scatter(y=curves[i],mode="lines",opacity=0.3))
+                fig.add_trace(go.Scatter(y=curves[i], mode="lines", opacity=0.3))
             fig.update_layout(height=400)
-            st.plotly_chart(fig,use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
 
 with tab4:
-    df=load_futures_trades()
+    df = load_futures_trades()
     if df.empty:
         st.info("Belum ada trade futures")
     else:
-        st.metric("Total PnL (USDT)",f"${df['PnL_USDT'].sum():,.2f}")
-        st.metric("Win Rate",f"{(df['PnL_USDT']>0).mean()*100:.2f}%")
-        st.dataframe(df,use_container_width=True)
-        st.download_button(
-            "⬇️ Download Futures Trades",
-            df.to_csv(index=False),
-            "futures_trades.csv"
-        )
-
+        st.metric("Total PnL (USDT)", f"${df['PnL_USDT'].sum():,.2f}")
+        st.metric("Win Rate", f"{(df['PnL_USDT']>0).mean()*100:.2f}%")
+        st.dataframe(df, use_container_width=True)
+        st.download_button("⬇️ Download Futures Trades",
+                           df.to_csv(index=False),
+                           "futures_trades.csv")
