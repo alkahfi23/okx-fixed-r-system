@@ -494,34 +494,33 @@ def analyze_single_coin(okx, symbol, mode, balance):
         return result
 
     # ===== LONG CHECK (SPOT & FUTURES) =====
-    if trend.iloc[-1] != 1:
-        result["Reason"] = "Trend not bullish"
-        return result
+    reasons = []
 
-    score = calculate_score(df4h, df1d)
-    result["Score"] = score
+    if trend.iloc[-1] != 1:
+        reasons.append("Trend belum bullish (Supertrend merah)")
+
+        score = calculate_score(df4h, df1d)
+        result["Score"] = score
 
     if mode == "FUTURES" and score <= 8:
-        result["Reason"] = "Score LONG < 9"
-        return result
+        reasons.append("Score LONG < 9 (belum A+ Futures)")
     if mode == "SPOT" and score < 6:
-        result["Reason"] = "Score < 6"
-        return result
+        reasons.append("Score < 6 (SPOT minimal belum terpenuhi)")
 
     ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
     if entry > ema20 * 1.03:
-        result["Reason"] = "Price too extended"
-        return result
+        reasons.append("Harga terlalu jauh di atas EMA20 (overextended)")
+
+    adl = accumulation_distribution(df4h)
+    if adl.iloc[-1] <= adl.iloc[-10]:
+        reasons.append("Belum ada akumulasi kuat (ADL lemah)")
 
     supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
     if not supports:
-        result["Reason"] = "No support for SL"
-        return result
+        reasons.append("Tidak ada support valid untuk SL")
 
-    sl = max(supports) * (1 - ZONE_BUFFER)
-    risk = abs(entry - sl) / entry
-    if risk <= 0.002 or risk >= FUTURES_MAX_RISK:
-        result["Reason"] = "Risk invalid"
+    if reasons:
+        result["Reasons"] = reasons
         return result
 
     result.update({
@@ -714,7 +713,10 @@ with tab5:
         st.markdown(f"### 📊 Hasil Analisa: `{symbol}`")
 
         if res["Trend"] == "NO TRADE":
-            st.error(f"❌ NO TRADE\n\nAlasan: {res['Reason']}")
+            st.error("❌ NO TRADE")
+            st.markdown("### 🔎 Alasan Tidak Masuk Kriteria:")
+        for r in res["Reasons"]:
+            st.write(f"• {r}")
         else:
             c1,c2,c3 = st.columns(3)
             c1.metric("Trend", res["Trend"])
@@ -729,6 +731,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
