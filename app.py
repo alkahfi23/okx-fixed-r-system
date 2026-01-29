@@ -159,6 +159,13 @@ def find_support(df, lb):
         if df.low.iloc[i] == min(df.low.iloc[i-lb:i+lb+1]):
             levels.append(df.low.iloc[i])
     return sorted(set(levels))
+    
+def find_resistance(df, lb):
+    levels = []
+    for i in range(lb, len(df)-lb):
+        if df.high.iloc[i] == max(df.high.iloc[i-lb:i+lb+1]):
+            levels.append(df.high.iloc[i])
+    return sorted(set(levels))
 
 # =====================================================
 # SCORE
@@ -184,6 +191,34 @@ def calculate_score(df4h, df1d):
     if adl.iloc[-1] > adl.iloc[-5]: score+=1
     if adl.iloc[-1] > adl.iloc[-10]: score+=1
     if adl.iloc[-1] > adl.iloc[-20]: score+=1
+
+    return score
+
+def calculate_score_short(df4h, df1d):
+    score = 0
+
+    ema20 = df4h.close.ewm(span=20).mean()
+    ema50 = df4h.close.ewm(span=50).mean()
+    ema200 = df1d.close.ewm(span=200).mean()
+    price = df4h.close.iloc[-1]
+
+    # Trend & structure (mirror long)
+    if price < ema20.iloc[-1]: score += 1
+    if ema20.iloc[-1] < ema50.iloc[-1]: score += 1
+    if ema50.iloc[-1] < ema200.iloc[-1]: score += 1
+    if price < ema200.iloc[-1]: score += 1
+
+    # Volume expansion
+    vo = volume_osc(df4h.volume, VO_FAST, VO_SLOW).iloc[-1]
+    if vo > 3: score += 1
+    if vo > 10: score += 1
+    if vo > 20: score += 1
+
+    # Distribution (reverse ADL)
+    adl = accumulation_distribution(df4h)
+    if adl.iloc[-1] < adl.iloc[-5]: score += 1
+    if adl.iloc[-1] < adl.iloc[-10]: score += 1
+    if adl.iloc[-1] < adl.iloc[-20]: score += 1
 
     return score
 
@@ -271,6 +306,53 @@ def check_signal(okx, symbol, mode, balance):
         return None
 
     stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
+    entry = df4h.close.iloc[-1]
+
+    # =========================
+    # ===== FUTURES SHORT =====
+    # =========================
+    if mode == "FUTURES" and trend.iloc[-1] == -1:
+        score = calculate_score_short(df4h, df1d)
+        if score <= 8:
+            return None
+
+        ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
+        if entry < ema20 * 0.97:   # avoid late short
+            return None
+
+        resistances = [r for r in find_resistance(df1d, SR_LOOKBACK) if r > entry]
+        if not resistances:
+            return None
+
+        sl = min(resistances) * (1 + ZONE_BUFFER)
+        risk = abs(sl - entry) / entry
+        if risk <= 0.002 or risk >= FUTURES_MAX_RISK:
+            return None
+
+        pos_size = calculate_futures_position(balance, entry, sl)
+
+        return {
+            "Time": now_wib(),
+            "CreatedAt": datetime.now(timezone.utc).isoformat(),
+            "Symbol": symbol,
+            "Phase": "DISTRIBUSI_KUAT",
+            "Score": score,
+            "Rating": "⭐"*score,
+            "Entry": round(entry,6),
+            "SL": round(sl,6),
+            "TP1": round(entry - (sl-entry)*TP1_R,6),
+            "TP2": round(entry - (sl-entry)*TP2_R,6),
+            "Status": "OPEN",
+            "Label": "NEW",
+            "AutoLabel": "WAIT",
+            "Mode": "FUTURES",
+            "Direction": "SHORT",
+            "PositionSize": pos_size
+        }
+
+    # =========================
+    # ===== LONG (SPOT & FUT) ==
+    # =========================
     if trend.iloc[-1] != 1:
         return None
 
@@ -294,7 +376,6 @@ def check_signal(okx, symbol, mode, balance):
         if score < 6:
             return None
 
-    entry = df4h.close.iloc[-1]
     ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
     if entry > ema20 * 1.03:
         return None
@@ -304,7 +385,7 @@ def check_signal(okx, symbol, mode, balance):
         return None
 
     sl = max(supports) * (1 - ZONE_BUFFER)
-    risk = (entry - sl) / entry
+    risk = abs(entry - sl) / entry
     if risk <= 0.002 or risk >= FUTURES_MAX_RISK:
         return None
 
@@ -329,7 +410,7 @@ def check_signal(okx, symbol, mode, balance):
         "Mode": mode,
         "Direction": "LONG",
         "PositionSize": pos_size
-    }
+    
 
 # =====================================================
 # UI
@@ -460,4 +541,5 @@ with tab4:
         st.download_button("⬇️ Download Futures Trades",
                            df.to_csv(index=False),
                            "futures_trades.csv")
+
 
