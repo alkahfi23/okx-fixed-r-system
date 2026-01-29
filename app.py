@@ -711,6 +711,7 @@ with tab5:
         res = analyze_single_coin(okx, symbol, mode_an, bal_an)
         st.markdown("## 📊 Hasil Analisa:")
         st.markdown(f"### {symbol}")
+
         c1, c2, c3 = st.columns(3)
         c1.metric("Trend", res["Trend"])
         c2.metric("Score", res["Score"])
@@ -728,6 +729,7 @@ with tab5:
     else:
         st.success(f"✅ {res['Trend']} VALID")
         st.markdown("### 📌 Level Trade")
+
         st.json({
             "Entry": res["Entry"],
             "SL": res["SL"],
@@ -735,6 +737,7 @@ with tab5:
             "TP2": res["TP2"],
             "Position Size": res["PositionSize"]
         })
+
 
 
 
