@@ -710,6 +710,11 @@ with tab5:
     if st.button("🔍 Analyze"):
         res = analyze_single_coin(okx, symbol, mode_an, bal_an)
 
+        # ===== SAFETY CHECK =====
+        if not res or "Trend" not in res:
+            st.error("Analisa gagal (data tidak lengkap)")
+            st.stop()
+
         st.markdown("## 📊 Hasil Analisa")
         st.markdown(f"### {symbol}")
 
@@ -718,30 +723,28 @@ with tab5:
         c2.metric("Score", res["Score"])
         c3.metric("Mode", mode_an)
 
-    # ===== NO TRADE =====
-    if res["Trend"] == "NO TRADE":
-        st.error("❌ NO TRADE")
-        st.markdown("### 🔎 Alasan Tidak Masuk Kriteria:")
+        # ===== NO TRADE =====
+        if res["Trend"] == "NO TRADE":
+            st.error("❌ NO TRADE")
+            st.markdown("### 🔎 Alasan Tidak Masuk Kriteria:")
 
-        for reason in res.get("Reasons", []):
-            st.write(f"• {reason}")
+            for reason in res.get("Reasons", []):
+                st.write(f"• {reason}")
 
-        st.caption("⚠️ Setup belum memenuhi standar A+ system")
+            st.caption("⚠️ Setup belum memenuhi standar A+ system")
 
-    # ===== VALID TRADE =====
-    else:
-        st.success(f"✅ {res['Trend']} VALID")
-        st.markdown("### 📌 Level Trade")
+        # ===== VALID TRADE =====
+        else:
+            st.success(f"✅ {res['Trend']} VALID")
+            st.markdown("### 📌 Level Trade")
 
-        st.json({
-            "Entry": res.get("Entry"),
-            "SL": res.get("SL"),
-            "TP1": res.get("TP1"),
-            "TP2": res.get("TP2"),
-            "Position Size": res.get("PositionSize")
-        })
-
-
+            st.json({
+                "Entry": res.get("Entry"),
+                "SL": res.get("SL"),
+                "TP1": res.get("TP1"),
+                "TP2": res.get("TP2"),
+                "Position Size": res.get("PositionSize")
+            })
 
 
 
