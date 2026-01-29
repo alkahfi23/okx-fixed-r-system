@@ -366,18 +366,51 @@ with tab1:
             if m.get("spot") and s.endswith("/USDT")
         ][:MAX_SCAN_SYMBOLS]
 
-        found=[]
-        prog = st.progress(0.0)
-        for i,s in enumerate(symbols,1):
+        total = len(symbols)
+        found = []
+
+        # UI elements
+        progress = st.progress(0.0)
+        status_box = st.empty()
+        counter_box = st.empty()
+        table_box = st.empty()
+
+        start_time = time.time()
+
+        for i, s in enumerate(symbols, 1):
+            elapsed = time.time() - start_time
+            avg_time = elapsed / i
+            eta = avg_time * (total - i)
+
+            status_box.info(
+                f"🔄 **Scanning:** `{s}`  \n"
+                f"📊 Progress: {i}/{total}  \n"
+                f"⏱ Elapsed: {elapsed:.1f}s | ETA: {eta:.1f}s"
+            )
+
             sig = check_signal(okx, s, MODE, BALANCE)
             if sig:
                 save_signal(sig)
                 found.append(sig)
-            prog.progress(i/len(symbols))
+                counter_box.success(f"🔥 Signal Found: {len(found)}")
+
+                # tampilkan sementara
+                table_box.dataframe(
+                    pd.DataFrame(found).tail(5),
+                    use_container_width=True
+                )
+
+            progress.progress(i / total)
             time.sleep(RATE_LIMIT_DELAY)
 
-        prog.empty()
-        st.dataframe(pd.DataFrame(found), use_container_width=True)
+        status_box.success(f"✅ Scan selesai | Total signal: {len(found)}")
+        progress.empty()
+
+        if found:
+            st.subheader("📌 Final Signals")
+            st.dataframe(pd.DataFrame(found), use_container_width=True)
+        else:
+            st.warning("Tidak ada setup valid ditemukan.")
 
 with tab2:
     df = load_signal_history()
@@ -427,3 +460,4 @@ with tab4:
         st.download_button("⬇️ Download Futures Trades",
                            df.to_csv(index=False),
                            "futures_trades.csv")
+
