@@ -435,6 +435,69 @@ def update_auto_labels(okx):
     if changed:
         df.to_csv(SIGNAL_LOG_FILE,index=False)
 
+def auto_close_signals(okx):
+    """
+    Auto close OPEN signals if TP1 / TP2 / SL hit
+    Works for SPOT & FUTURES
+    """
+
+    df = load_signal_history()
+    changed = False
+
+    for i, row in df.iterrows():
+        if row["Status"] != "OPEN":
+            continue
+
+        try:
+            ticker = okx.fetch_ticker(row["Symbol"])
+            price = ticker["last"]
+
+            entry = row["Entry"]
+            sl = row["SL"]
+            tp1 = row["TP1"]
+            tp2 = row["TP2"]
+            direction = row["Direction"]
+
+            # =========================
+            # SL HIT
+            # =========================
+            if direction == "LONG" and price <= sl:
+                df.at[i, "Status"] = "SL HIT"
+                changed = True
+
+            elif direction == "SHORT" and price >= sl:
+                df.at[i, "Status"] = "SL HIT"
+                changed = True
+
+            # =========================
+            # TP2 HIT (FINAL)
+            # =========================
+            elif direction == "LONG" and price >= tp2:
+                df.at[i, "Status"] = "TP2 HIT"
+                changed = True
+
+            elif direction == "SHORT" and price <= tp2:
+                df.at[i, "Status"] = "TP2 HIT"
+                changed = True
+
+            # =========================
+            # TP1 HIT (PARTIAL)
+            # =========================
+            elif direction == "LONG" and price >= tp1:
+                if row["Status"] == "OPEN":
+                    df.at[i, "Status"] = "TP1 HIT"
+                    changed = True
+
+            elif direction == "SHORT" and price <= tp1:
+                if row["Status"] == "OPEN":
+                    df.at[i, "Status"] = "TP1 HIT"
+                    changed = True
+
+        except Exception:
+            continue
+
+    if changed:
+        df.to_csv(SIGNAL_LOG_FILE, index=False)
 # =====================================================
 # FUTURES RISK ENGINE
 # =====================================================
@@ -774,6 +837,7 @@ st.title("🚀 OPSI A PRO — SPOT + FUTURES (LONG 100x)")
 
 okx = get_okx()
 update_auto_labels(okx)
+auto_close_signals(okx)
 
 MODE = st.radio("🧭 Trading Mode", ["SPOT","FUTURES"], horizontal=True)
 current_hour = get_wib_hour()
@@ -1044,6 +1108,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
