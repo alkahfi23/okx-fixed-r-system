@@ -428,6 +428,113 @@ def check_signal(okx, symbol, mode, balance):
         "PositionSize": pos_size
     }
 
+def analyze_single_coin(okx, symbol, mode, balance):
+    result = {
+        "Symbol": symbol,
+        "Mode": mode,
+        "Trend": "NO TRADE",
+        "Score": 0,
+        "Entry": None,
+        "SL": None,
+        "TP1": None,
+        "TP2": None,
+        "PositionSize": None,
+        "Reason": ""
+    }
+
+    try:
+        df4h = pd.DataFrame(
+            okx.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
+            columns=["t","open","high","low","close","volume"]
+        )
+        df1d = pd.DataFrame(
+            okx.fetch_ohlcv(symbol, DAILY_TF, limit=LIMIT_1D),
+            columns=["t","open","high","low","close","volume"]
+        )
+    except Exception as e:
+        result["Reason"] = f"Data error: {e}"
+        return result
+
+    stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
+    entry = df4h.close.iloc[-1]
+
+    # ===== FUTURES SHORT CHECK =====
+    if mode == "FUTURES" and trend.iloc[-1] == -1:
+        score = calculate_score_short(df4h, df1d)
+        result["Score"] = score
+
+        if score <= 8:
+            result["Reason"] = "Score SHORT < 9"
+            return result
+
+        ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
+        if entry < ema20 * 0.97:
+            result["Reason"] = "Late SHORT"
+            return result
+
+        resistances = [r for r in find_resistance(df1d, SR_LOOKBACK) if r > entry]
+        if not resistances:
+            result["Reason"] = "No resistance for SL"
+            return result
+
+        sl = min(resistances) * (1 + ZONE_BUFFER)
+        risk = abs(sl - entry) / entry
+        if risk <= 0.002 or risk >= FUTURES_MAX_RISK:
+            result["Reason"] = "Risk invalid"
+            return result
+
+        result.update({
+            "Trend": "SHORT",
+            "Entry": round(entry,6),
+            "SL": round(sl,6),
+            "TP1": round(entry - (sl-entry)*TP1_R,6),
+            "TP2": round(entry - (sl-entry)*TP2_R,6),
+            "PositionSize": calculate_futures_position(balance, entry, sl)
+        })
+        return result
+
+    # ===== LONG CHECK (SPOT & FUTURES) =====
+    if trend.iloc[-1] != 1:
+        result["Reason"] = "Trend not bullish"
+        return result
+
+    score = calculate_score(df4h, df1d)
+    result["Score"] = score
+
+    if mode == "FUTURES" and score <= 8:
+        result["Reason"] = "Score LONG < 9"
+        return result
+    if mode == "SPOT" and score < 6:
+        result["Reason"] = "Score < 6"
+        return result
+
+    ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
+    if entry > ema20 * 1.03:
+        result["Reason"] = "Price too extended"
+        return result
+
+    supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
+    if not supports:
+        result["Reason"] = "No support for SL"
+        return result
+
+    sl = max(supports) * (1 - ZONE_BUFFER)
+    risk = abs(entry - sl) / entry
+    if risk <= 0.002 or risk >= FUTURES_MAX_RISK:
+        result["Reason"] = "Risk invalid"
+        return result
+
+    result.update({
+        "Trend": "LONG",
+        "Entry": round(entry,6),
+        "SL": round(sl,6),
+        "TP1": round(entry+(entry-sl)*TP1_R,6),
+        "TP2": round(entry+(entry-sl)*TP2_R,6),
+        "PositionSize": calculate_futures_position(balance, entry, sl) if mode=="FUTURES" else None
+    })
+
+    return result
+
 # =====================================================
 # UI
 # =====================================================
@@ -479,11 +586,12 @@ if MODE == "FUTURES":
         "• A+ setup only"
     )
 
-tab1,tab2,tab3,tab4 = st.tabs([
+tab1,tab2,tab3,tab4,tab5 = st.tabs([
     "📡 Scan",
     "📜 History SPOT",
     "🎲 Monte Carlo",
-    "⚡ Futures History"
+    "⚡ Futures History",
+    "🎯 Analisa Coin"
 ])
 
 with tab1:
@@ -587,6 +695,40 @@ with tab4:
         st.download_button("⬇️ Download Futures Trades",
                            df.to_csv(index=False),
                            "futures_trades.csv")
+        
+with tab5:
+    st.subheader("🎯 Analisa Coin Manual (Logic Sama dengan Scanner)")
+
+    symbols = [
+        s for s,m in okx.markets.items()
+        if m.get("spot") and s.endswith("/USDT")
+    ]
+
+    symbol = st.selectbox("Pilih Coin", symbols)
+    mode_an = st.radio("Mode Analisa", ["SPOT","FUTURES"], horizontal=True)
+    bal_an = st.number_input("Balance (USDT)", value=10000.0, step=100.0)
+
+    if st.button("🔍 Analyze"):
+        res = analyze_single_coin(okx, symbol, mode_an, bal_an)
+
+        st.markdown(f"### 📊 Hasil Analisa: `{symbol}`")
+
+        if res["Trend"] == "NO TRADE":
+            st.error(f"❌ NO TRADE\n\nAlasan: {res['Reason']}")
+        else:
+            c1,c2,c3 = st.columns(3)
+            c1.metric("Trend", res["Trend"])
+            c2.metric("Score", res["Score"])
+            c3.metric("Mode", mode_an)
+
+            st.markdown("### 📌 Level")
+            st.json({
+                "Entry": res["Entry"],
+                "SL": res["SL"],
+                "TP1": res["TP1"],
+                "TP2": res["TP2"],
+                "Position Size": res["PositionSize"]
+            })
 
 
 
