@@ -709,9 +709,7 @@ with tab5:
 
     if st.button("🔍 Analyze"):
         res = analyze_single_coin(okx, symbol, mode_an, bal_an)
-
         st.markdown(f"### 📊 Hasil Analisa: `{symbol}`")
-
         if res["Trend"] == "NO TRADE":
             st.error("❌ NO TRADE")
             st.markdown("### 🔎 Alasan Tidak Masuk Kriteria:")
@@ -731,6 +729,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
