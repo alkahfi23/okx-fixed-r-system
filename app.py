@@ -829,6 +829,47 @@ def analyze_single_coin(okx, symbol, mode, balance):
     })
 
     return result
+
+
+def merge_signal_history(upload_df):
+    """
+    Merge uploaded CSV into signal_history.csv
+    Anti-duplicate by Symbol + Time + Mode
+    """
+
+    history = load_signal_history()
+
+    # pastikan kolom wajib ada
+    required_cols = history.columns.tolist()
+    for c in required_cols:
+        if c not in upload_df.columns:
+            upload_df[c] = ""
+
+    upload_df = upload_df[required_cols]
+
+    # key unik
+    history["_key"] = (
+        history["Symbol"].astype(str)
+        + history["Time"].astype(str)
+        + history["Mode"].astype(str)
+    )
+
+    upload_df["_key"] = (
+        upload_df["Symbol"].astype(str)
+        + upload_df["Time"].astype(str)
+        + upload_df["Mode"].astype(str)
+    )
+
+    new_rows = upload_df[~upload_df["_key"].isin(history["_key"])]
+
+    if len(new_rows) > 0:
+        history = pd.concat(
+            [history.drop(columns="_key"), new_rows.drop(columns="_key")],
+            ignore_index=True
+        )
+        history.to_csv(SIGNAL_LOG_FILE, index=False)
+
+    return len(new_rows)
 # =====================================================
 # UI
 # =====================================================
@@ -892,33 +933,36 @@ tab1,tab2,tab3,tab4,tab5 = st.tabs([
 with tab1:
     st.subheader("📡 Institutional Market Scanner")
 
-    # =========================
-    # 🔄 RESTORE OPEN SIGNAL
-    # =========================
+    # =====================================================
+    # 🔄 RESTORE OPEN SIGNAL (SPOT / FUTURES)
+    # =====================================================
     history_df = load_signal_history()
+
     restored = history_df[
         (history_df["Status"] == "OPEN") &
         (history_df["Mode"] == MODE)
-    ]
+    ].copy()
 
     found = restored.to_dict("records")
 
     st.info(
-        f"🔄 Restore {len(restored)} OPEN signal dari history "
-        f"({MODE})"
+        f"🔄 Restore {len(restored)} OPEN signal "
+        f"({MODE}) dari riwayat"
     )
 
-    if len(restored) > 0:
+    if not restored.empty:
         st.dataframe(
             restored.sort_values("Time", ascending=False),
             use_container_width=True
         )
+    else:
+        st.caption("Belum ada OPEN signal tersimpan")
 
     st.divider()
 
-    # =========================
+    # =====================================================
     # 🚀 START SCAN
-    # =========================
+    # =====================================================
     if st.button("🔍 Scan Market"):
         symbols = [
             s for s, m in okx.markets.items()
@@ -934,9 +978,9 @@ with tab1:
 
         start_time = time.time()
 
-        # =========================
+        # =====================================================
         # SCAN LOOP
-        # =========================
+        # =====================================================
         for i, s in enumerate(symbols, 1):
             elapsed = time.time() - start_time
             avg_time = elapsed / i
@@ -950,9 +994,9 @@ with tab1:
 
             sig = check_signal(okx, s, MODE, BALANCE)
 
-            # =========================
-            # HANDLE SIGNAL
-            # =========================
+            # =====================================================
+            # HANDLE SIGNAL RESULT
+            # =====================================================
             if not sig:
                 pass
 
@@ -1001,9 +1045,9 @@ with tab1:
             progress.progress(i / total)
             time.sleep(RATE_LIMIT_DELAY)
 
-        # =========================
+        # =====================================================
         # FINAL OUTPUT
-        # =========================
+        # =====================================================
         status_box.success(
             f"✅ Scan selesai | Total OPEN signal: {len(found)}"
         )
@@ -1020,10 +1064,75 @@ with tab1:
         else:
             st.warning("Tidak ada setup A+ institutional ditemukan.")
 with tab2:
-    df = load_signal_history()
-    st.dataframe(df[df["Mode"]=="SPOT"].sort_values("Time", ascending=False),
-                 use_container_width=True)
+    st.subheader("📜 Signal History (SPOT & FUTURES)")
 
+    # =====================================================
+    # FILTER MODE
+    # =====================================================
+    mode_filter = st.radio(
+        "Filter Mode",
+        ["ALL", "SPOT", "FUTURES"],
+        horizontal=True
+    )
+
+    df = load_signal_history()
+
+    if mode_filter != "ALL":
+        df = df[df["Mode"] == mode_filter]
+
+    df = df.sort_values("Time", ascending=False)
+
+    st.metric("Total Records", len(df))
+    st.metric("OPEN Signals", (df["Status"] == "OPEN").sum())
+
+    st.dataframe(df, use_container_width=True)
+
+    st.divider()
+
+    # =====================================================
+    # 📤 UPLOAD CSV LAMA (RESTORE)
+    # =====================================================
+    st.subheader("📤 Restore dari CSV Lama")
+
+    uploaded = st.file_uploader(
+        "Upload file signal_history.csv lama",
+        type=["csv"]
+    )
+
+    if uploaded:
+        try:
+            upload_df = pd.read_csv(uploaded)
+
+            st.write("📄 Preview file upload:")
+            st.dataframe(upload_df.head(), use_container_width=True)
+
+            if st.button("♻️ Merge ke History"):
+                added = merge_signal_history(upload_df)
+
+                if added > 0:
+                    st.success(
+                        f"✅ Restore berhasil: {added} signal baru ditambahkan"
+                    )
+                else:
+                    st.info("ℹ️ Tidak ada signal baru (semua sudah ada)")
+
+                st.experimental_rerun()
+
+        except Exception as e:
+            st.error(f"❌ Gagal membaca CSV: {e}")
+
+    st.divider()
+
+    # =====================================================
+    # 📥 DOWNLOAD BACKUP
+    # =====================================================
+    st.download_button(
+        "⬇️ Download Full Signal History",
+        load_signal_history().to_csv(index=False),
+        "signal_history_backup.csv",
+        mime="text/csv"
+    )
+    
 with tab3:
     tr = load_trade_results()
     sig = load_signal_history()
@@ -1108,6 +1217,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
