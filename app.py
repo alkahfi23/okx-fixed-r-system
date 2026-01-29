@@ -183,93 +183,83 @@ def find_resistance(df, lb):
             levels.append(df.high.iloc[i])
     return sorted(set(levels))
 
-def detect_regime_shift(df4h, df1d, score_data):
+def detect_market_regime(df4h, df1d, score_data):
     """
-    Detect institutional regime shift
-    Return: None | dict
+    Return:
+    - REGIME_ACCUMULATION
+    - REGIME_DISTRIBUTION
+    - REGIME_MARKUP
+    - REGIME_MARKDOWN
     """
 
-    _, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
-
-    ema200 = df1d.close.ewm(span=200).mean()
-    ema_slope_now = ema200.iloc[-1] - ema200.iloc[-10]
-    ema_slope_prev = ema200.iloc[-10] - ema200.iloc[-20]
+    ema200 = df1d.close.ewm(span=200).mean().iloc[-1]
+    price = df1d.close.iloc[-1]
 
     adl = accumulation_distribution(df4h)
+    adl_up = adl.iloc[-1] > adl.iloc[-20]
+    adl_down = adl.iloc[-1] < adl.iloc[-20]
 
-    shift_signals = []
+    trend_score = score_data.get("TrendScore", 0)
+    volume_score = score_data.get("VolumeScore", 0)
 
-    # 1. Trend flip
-    if trend.iloc[-1] != trend.iloc[-3]:
-        shift_signals.append("Supertrend flip")
+    if price < ema200 and adl_down and trend_score < 30:
+        return "REGIME_MARKDOWN"
 
-    # 2. EMA200 slope change
-    if ema_slope_prev > 0 and ema_slope_now < 0:
-        shift_signals.append("EMA200 slope turned bearish")
-    if ema_slope_prev < 0 and ema_slope_now > 0:
-        shift_signals.append("EMA200 slope turned bullish")
+    if price > ema200 and adl_down:
+        return "REGIME_DISTRIBUTION"
 
-    # 3. ADL divergence
-    if adl.iloc[-1] < adl.iloc[-20]:
-        shift_signals.append("Distribution pressure")
-    if adl.iloc[-1] > adl.iloc[-20]:
-        shift_signals.append("Accumulation pressure")
+    if price > ema200 and adl_up and trend_score > 60:
+        return "REGIME_MARKUP"
 
-    # 4. Score shock
-    if score_data["TotalScore"] >= 80:
-        shift_signals.append("High institutional participation")
+    return "REGIME_ACCUMULATION"
 
-    if len(shift_signals) >= 3:
+def detect_regime_shift(df4h, df1d, score_data):
+    """
+    Detects major institutional phase change
+    """
+
+    adl = accumulation_distribution(df4h)
+    ema200 = df1d.close.ewm(span=200).mean().iloc[-1]
+    price = df1d.close.iloc[-1]
+
+    if adl.iloc[-1] < adl.iloc[-30] and price < ema200:
         return {
             "SignalType": "REGIME_SHIFT",
-            "Signals": shift_signals
+            "Regime": "SHIFT_TO_MARKDOWN",
+            "Message": "⚠️ Institutional exit detected (Distribution → Markdown)"
+        }
+
+    if adl.iloc[-1] > adl.iloc[-30] and price > ema200:
+        return {
+            "SignalType": "REGIME_SHIFT",
+            "Regime": "SHIFT_TO_MARKUP",
+            "Message": "🚀 Institutional accumulation → markup phase"
         }
 
     return None
 
 def execution_confirmation(df_ltf, direction):
     """
-    Confirm precise execution timing
+    Final execution filter (15m / 5m logic)
     """
 
-    ema20 = df_ltf.close.ewm(span=20).mean()
-    ema50 = df_ltf.close.ewm(span=50).mean()
+    reasons = []
+    close = df_ltf.close
+    ema20 = close.ewm(span=20).mean()
 
-    price = df_ltf.close.iloc[-1]
-    vol_now = df_ltf.volume.iloc[-1]
-    vol_avg = df_ltf.volume.rolling(20).mean().iloc[-1]
+    if direction == "LONG":
+        if close.iloc[-1] < ema20.iloc[-1]:
+            reasons.append("LTF belum reclaim EMA20")
+        if close.iloc[-1] < close.iloc[-3]:
+            reasons.append("Momentum belum konfirmasi")
 
-    confirmations = []
+    if direction == "SHORT":
+        if close.iloc[-1] > ema20.iloc[-1]:
+            reasons.append("LTF belum reject EMA20")
+        if close.iloc[-1] > close.iloc[-3]:
+            reasons.append("Momentum short belum valid")
 
-    # 1. EMA pullback
-    if direction == "LONG" and ema20.iloc[-1] < price < ema20.iloc[-1] * 1.01:
-        confirmations.append("Healthy pullback to EMA20")
-
-    if direction == "SHORT" and ema20.iloc[-1] > price > ema20.iloc[-1] * 0.99:
-        confirmations.append("Healthy pullback to EMA20")
-
-    # 2. EMA structure
-    if direction == "LONG" and ema20.iloc[-1] > ema50.iloc[-1]:
-        confirmations.append("Bullish EMA structure")
-
-    if direction == "SHORT" and ema20.iloc[-1] < ema50.iloc[-1]:
-        confirmations.append("Bearish EMA structure")
-
-    # 3. Volume expansion
-    if vol_now > vol_avg * 1.2:
-        confirmations.append("Volume expansion")
-
-    # 4. Candle control (avoid FOMO)
-    candle_range = df_ltf.high.iloc[-1] - df_ltf.low.iloc[-1]
-    avg_range = (df_ltf.high - df_ltf.low).rolling(20).mean().iloc[-1]
-
-    if candle_range < avg_range * 1.5:
-        confirmations.append("No FOMO candle")
-
-    if len(confirmations) >= 3:
-        return True, confirmations
-
-    return False, confirmations
+    return (len(reasons) == 0), reasons
 # =====================================================
 # SCORE
 # =====================================================
@@ -968,6 +958,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
