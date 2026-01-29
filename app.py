@@ -22,7 +22,7 @@ MULTIPLIER = 3.0
 
 VO_FAST = 14
 VO_SLOW = 28
-VO_MIN = 5
+VO_MIN = 3
 
 SR_LOOKBACK = 5
 ZONE_BUFFER = 0.01
@@ -432,3 +432,4 @@ with tab4:
         st.dataframe(pd.DataFrame(DEBUG_LOG),use_container_width=True)
     else:
         st.info("Belum ada debug")
+
