@@ -61,6 +61,10 @@ def is_safe_futures_time():
     h = get_wib_hour()
     return 19 <= h <= 23
 
+def is_safe_spot_time():
+    h = get_wib_hour()
+    return (7 <= h <= 10) or (19 <= h <= 23)
+
 # =====================================================
 # OKX
 # =====================================================
@@ -436,22 +440,33 @@ update_auto_labels(okx)
 MODE = st.radio("🧭 Trading Mode", ["SPOT","FUTURES"], horizontal=True)
 current_hour = get_wib_hour()
 
+# 🔴 JAM BAHAYA UNTUK SEMUA MODE
 if is_danger_time():
     st.error(
         f"⛔ JAM BAHAYA ({current_hour}:00 WIB)\n\n"
         "• Likuiditas rendah\n"
         "• Risiko fake move tinggi\n"
-        "• Futures 100x SANGAT berbahaya\n\n"
-        "Disarankan scan di:\n"
+        "• Tidak ideal untuk entry\n\n"
+        "Jam ideal:\n"
         "07:00–10:00 atau 19:00–23:00 WIB"
     )
 
+# 🟡 WARNING FUTURES
 elif MODE == "FUTURES" and not is_safe_futures_time():
     st.warning(
         f"⚠️ Futures di luar jam optimal ({current_hour}:00 WIB)\n\n"
         "Jam terbaik Futures:\n"
         "19:00–23:00 WIB\n\n"
         "Gunakan hanya untuk A+ setup"
+    )
+
+# 🟡 WARNING SPOT
+elif MODE == "SPOT" and not is_safe_spot_time():
+    st.warning(
+        f"⚠️ SPOT di luar jam ideal ({current_hour}:00 WIB)\n\n"
+        "SPOT paling optimal saat:\n"
+        "07:00–10:00 dan 19:00–23:00 WIB\n\n"
+        "Entry masih boleh, tapi tunggu konfirmasi lebih kuat"
     )
 BALANCE = st.number_input("💰 Account Balance (USDT)", value=10000.0, step=100.0)
 
@@ -572,6 +587,7 @@ with tab4:
         st.download_button("⬇️ Download Futures Trades",
                            df.to_csv(index=False),
                            "futures_trades.csv")
+
 
 
 
