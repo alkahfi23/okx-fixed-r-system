@@ -710,6 +710,7 @@ with tab5:
     if st.button("🔍 Analyze"):
         res = analyze_single_coin(okx, symbol, mode_an, bal_an)
         st.markdown(f"## 📊 Hasil Analisa: `{sym}`")
+        
         c1, c2, c3 = st.columns(3)
         c1.metric("Trend", r["Trend"])
         c2.metric("Score", r["Score"])
@@ -731,6 +732,7 @@ with tab5:
                     "TP2": r["TP2"],
                     "Position Size": r["PositionSize"]
             })
+
 
 
 
