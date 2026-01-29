@@ -410,7 +410,7 @@ def check_signal(okx, symbol, mode, balance):
         "Mode": mode,
         "Direction": "LONG",
         "PositionSize": pos_size
-    
+    }
 
 # =====================================================
 # UI
@@ -541,5 +541,6 @@ with tab4:
         st.download_button("⬇️ Download Futures Trades",
                            df.to_csv(index=False),
                            "futures_trades.csv")
+
 
 
