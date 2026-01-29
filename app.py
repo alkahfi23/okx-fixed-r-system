@@ -454,15 +454,16 @@ def check_signal(okx, symbol, mode, balance):
     """
     FULL INSTITUTIONAL CHECK SIGNAL ENGINE
 
-    Output:
-    - TRADE_EXECUTION
-    - MARKET_WARNING
-    - REGIME_SHIFT
-    - None
+    Return:
+    - dict with SignalType:
+        • TRADE_EXECUTION
+        • MARKET_WARNING
+        • REGIME_SHIFT
+    - or None
     """
 
     # =========================
-    # DATA FETCH (HTF)
+    # 1. FETCH HTF DATA
     # =========================
     try:
         df4h = pd.DataFrame(
@@ -477,11 +478,15 @@ def check_signal(okx, symbol, mode, balance):
         return None
 
     entry = df4h.close.iloc[-1]
+
+    # =========================
+    # 2. TREND & DIRECTION
+    # =========================
     _, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
     direction = "SHORT" if trend.iloc[-1] == -1 else "LONG"
 
     # =========================
-    # INSTITUTIONAL SCORE
+    # 3. INSTITUTIONAL SCORE
     # =========================
     score_data = calculate_institutional_score(
         df4h, df1d, direction=direction
@@ -489,20 +494,20 @@ def check_signal(okx, symbol, mode, balance):
     score = score_data["TotalScore"]
 
     # =========================
-    # SCORE GATE
+    # 4. SCORE GATE
     # =========================
-    if mode == "FUTURES" and score < 80:
-        return None
     if mode == "SPOT" and score < 70:
+        return None
+    if mode == "FUTURES" and score < 80:
         return None
 
     # =========================
-    # MARKET REGIME
+    # 5. MARKET REGIME
     # =========================
     regime = detect_market_regime(df4h, df1d, score_data)
 
     # =========================
-    # REGIME SHIFT DETECTION
+    # 6. REGIME SHIFT ALERT
     # =========================
     shift = detect_regime_shift(df4h, df1d, score_data)
     if shift:
@@ -514,31 +519,35 @@ def check_signal(okx, symbol, mode, balance):
         }
 
     # =========================
-    # REGIME FILTER
+    # 7. SPOT RULE (NO SHORT)
     # =========================
-    if mode == "SPOT":
-        if regime != "REGIME_ACCUMULATION":
-            return {
-                "SignalType": "MARKET_WARNING",
-                "Symbol": symbol,
-                "Regime": regime,
-                "Message": "NO BUY ZONE (Institutional Distribution)"
-            }
+    if mode == "SPOT" and direction == "SHORT":
+        return {
+            "SignalType": "MARKET_WARNING",
+            "Symbol": symbol,
+            "Regime": regime,
+            "Message": "SPOT SHORT = DISTRIBUTION WARNING (NO BUY ZONE)"
+        }
+
+    # =========================
+    # 8. REGIME PERMISSION
+    # =========================
+    if mode == "SPOT" and regime != "REGIME_ACCUMULATION":
+        return {
+            "SignalType": "MARKET_WARNING",
+            "Symbol": symbol,
+            "Regime": regime,
+            "Message": "NO BUY ZONE (Institutional Distribution)"
+        }
 
     if mode == "FUTURES":
-        if regime not in ["REGIME_DISTRIBUTION", "REGIME_MARKDOWN"]:
+        if direction == "SHORT" and regime not in ["REGIME_DISTRIBUTION","REGIME_MARKDOWN"]:
+            return None
+        if direction == "LONG" and regime not in ["REGIME_ACCUMULATION","REGIME_MARKUP"]:
             return None
 
     # =========================
-    # TREND FILTER
-    # =========================
-    if direction == "LONG" and trend.iloc[-1] != 1:
-        return None
-    if direction == "SHORT" and trend.iloc[-1] != -1:
-        return None
-
-    # =========================
-    # EMA DISTANCE FILTER
+    # 9. EMA DISTANCE FILTER
     # =========================
     ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
 
@@ -548,7 +557,7 @@ def check_signal(okx, symbol, mode, balance):
         return None
 
     # =========================
-    # ADL CONFIRMATION
+    # 10. ADL CONFIRMATION
     # =========================
     adl = accumulation_distribution(df4h)
     if direction == "LONG" and adl.iloc[-1] <= adl.iloc[-10]:
@@ -557,7 +566,7 @@ def check_signal(okx, symbol, mode, balance):
         return None
 
     # =========================
-    # SL STRUCTURE
+    # 11. SL STRUCTURE
     # =========================
     if direction == "LONG":
         supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
@@ -571,7 +580,7 @@ def check_signal(okx, symbol, mode, balance):
         sl = min(resistances) * (1 + ZONE_BUFFER)
 
     # =========================
-    # EXECUTION CONFIRMATION (LTF)
+    # 12. EXECUTION CONFIRMATION (15m)
     # =========================
     try:
         df_ltf = pd.DataFrame(
@@ -586,7 +595,7 @@ def check_signal(okx, symbol, mode, balance):
         return None
 
     # =========================
-    # TP CALCULATION
+    # 13. TP & PHASE
     # =========================
     if direction == "LONG":
         tp1 = entry + (entry - sl) * TP1_R
@@ -598,7 +607,7 @@ def check_signal(okx, symbol, mode, balance):
         phase = "DISTRIBUSI_INSTITUSI"
 
     # =========================
-    # POSITION SIZE
+    # 14. POSITION SIZE
     # =========================
     pos_size = 0.0
     if mode == "FUTURES":
@@ -607,7 +616,7 @@ def check_signal(okx, symbol, mode, balance):
             return None
 
     # =========================
-    # FINAL SIGNAL
+    # 15. FINAL SIGNAL
     # =========================
     return {
         "SignalType": "TRADE_EXECUTION",
@@ -817,16 +826,23 @@ tab1,tab2,tab3,tab4,tab5 = st.tabs([
 ])
 
 with tab1:
+    st.subheader("📡 Institutional Market Scanner")
+
     if st.button("🔍 Scan Market"):
+        # =========================
+        # SYMBOL LIST
+        # =========================
         symbols = [
-            s for s,m in okx.markets.items()
+            s for s, m in okx.markets.items()
             if m.get("spot") and s.endswith("/USDT")
         ][:MAX_SCAN_SYMBOLS]
 
         total = len(symbols)
         found = []
 
-        # UI elements
+        # =========================
+        # UI ELEMENTS
+        # =========================
         progress = st.progress(0.0)
         status_box = st.empty()
         counter_box = st.empty()
@@ -834,6 +850,9 @@ with tab1:
 
         start_time = time.time()
 
+        # =========================
+        # SCAN LOOP
+        # =========================
         for i, s in enumerate(symbols, 1):
             elapsed = time.time() - start_time
             avg_time = elapsed / i
@@ -845,29 +864,69 @@ with tab1:
                 f"⏱ Elapsed: {elapsed:.1f}s | ETA: {eta:.1f}s"
             )
 
+            # =========================
+            # CHECK SIGNAL
+            # =========================
             sig = check_signal(okx, s, MODE, BALANCE)
-            if sig:
-                save_signal(sig)
-                found.append(sig)
-                counter_box.success(f"🔥 Signal Found: {len(found)}")
 
-                # tampilkan sementara
+            # =========================
+            # HANDLE RESULT
+            # =========================
+            if not sig:
+                pass
+
+            elif sig["SignalType"] == "TRADE_EXECUTION":
+                save_signal({
+                    "Time": sig["Time"],
+                    "CreatedAt": sig["CreatedAt"],
+                    "Symbol": sig["Symbol"],
+                    "Phase": sig["Phase"],
+                    "Score": sig["Score"],
+                    "Rating": "⭐" * (sig["Score"] // 10),
+                    "Entry": sig["Entry"],
+                    "SL": sig["SL"],
+                    "TP1": sig["TP1"],
+                    "TP2": sig["TP2"],
+                    "Status": "OPEN",
+                    "Label": "INST",
+                    "AutoLabel": "WAIT",
+                    "Mode": sig["Mode"],
+                    "Direction": sig["Direction"],
+                    "PositionSize": sig["PositionSize"]
+                })
+
+                found.append(sig)
+                counter_box.success(f"🔥 Trade Signal: {len(found)}")
+
                 table_box.dataframe(
                     pd.DataFrame(found).tail(5),
                     use_container_width=True
                 )
 
+            elif sig["SignalType"] == "MARKET_WARNING":
+                status_box.warning(
+                    f"⚠️ {s} | {sig['Message']} | Regime: {sig['Regime']}"
+                )
+
+            elif sig["SignalType"] == "REGIME_SHIFT":
+                status_box.error(
+                    f"🚨 REGIME SHIFT {s}\n{sig['Details']['Message']}"
+                )
+
             progress.progress(i / total)
             time.sleep(RATE_LIMIT_DELAY)
 
-        status_box.success(f"✅ Scan selesai | Total signal: {len(found)}")
+        # =========================
+        # FINAL OUTPUT
+        # =========================
+        status_box.success(f"✅ Scan selesai | Total trade signal: {len(found)}")
         progress.empty()
 
         if found:
-            st.subheader("📌 Final Signals")
+            st.subheader("📌 Final Trade Signals (Institutional Grade)")
             st.dataframe(pd.DataFrame(found), use_container_width=True)
         else:
-            st.warning("Tidak ada setup valid ditemukan.")
+            st.warning("Tidak ada setup A+ institutional ditemukan.")
 
 with tab2:
     df = load_signal_history()
@@ -958,6 +1017,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
