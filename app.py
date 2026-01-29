@@ -439,7 +439,7 @@ def analyze_single_coin(okx, symbol, mode, balance):
         "TP1": None,
         "TP2": None,
         "PositionSize": None,
-        "Reason": ""
+        "Reason": []
     }
 
     try:
@@ -459,28 +459,28 @@ def analyze_single_coin(okx, symbol, mode, balance):
     entry = df4h.close.iloc[-1]
 
     # ===== FUTURES SHORT CHECK =====
+    reasons = []
+
     if mode == "FUTURES" and trend.iloc[-1] == -1:
         score = calculate_score_short(df4h, df1d)
         result["Score"] = score
 
         if score <= 8:
-            result["Reason"] = "Score SHORT < 9"
-            return result
-
-        ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
+            reasons.append("Score SHORT < 9 (belum A+)")
+            ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
         if entry < ema20 * 0.97:
-            result["Reason"] = "Late SHORT"
-            return result
+            reasons.append("Harga terlalu jauh dari EMA20 (late short)")
+
+        adl = accumulation_distribution(df4h)
+        if adl.iloc[-1] >= adl.iloc[-10]:
+            reasons.append("ADL belum distribusi (seller belum dominan)")
 
         resistances = [r for r in find_resistance(df1d, SR_LOOKBACK) if r > entry]
         if not resistances:
-            result["Reason"] = "No resistance for SL"
-            return result
+            reasons.append("Tidak ada resistance valid untuk SL")
 
-        sl = min(resistances) * (1 + ZONE_BUFFER)
-        risk = abs(sl - entry) / entry
-        if risk <= 0.002 or risk >= FUTURES_MAX_RISK:
-            result["Reason"] = "Risk invalid"
+        if reasons:
+            result["Reasons"] = reasons
             return result
 
         result.update({
@@ -729,6 +729,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
