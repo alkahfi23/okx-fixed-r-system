@@ -374,6 +374,14 @@ def calculate_futures_position(balance, entry, sl):
 # SIGNAL LOGIC
 # =====================================================
 def check_signal(okx, symbol, mode, balance):
+    """
+    Institutional-grade signal checker
+    Return: dict (signal) or None
+    """
+
+    # =========================
+    # DATA FETCH
+    # =========================
     try:
         df4h = pd.DataFrame(
             okx.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
@@ -386,110 +394,110 @@ def check_signal(okx, symbol, mode, balance):
     except:
         return None
 
-    stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
     entry = df4h.close.iloc[-1]
+    _, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
+
+    direction = "SHORT" if trend.iloc[-1] == -1 else "LONG"
 
     # =========================
-    # ===== FUTURES SHORT =====
+    # INSTITUTIONAL SCORE (0–100)
     # =========================
-    if mode == "FUTURES" and trend.iloc[-1] == -1:
-        score = calculate_score_short(df4h, df1d)
-        if score <= 8:
-            return None
+    score_data = calculate_institutional_score(
+        df4h, df1d, direction=direction
+    )
 
-        ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
-        if entry < ema20 * 0.97:   # avoid late short
-            return None
+    score = score_data["TotalScore"]
 
+    # =========================
+    # SCORE THRESHOLD
+    # =========================
+    if mode == "FUTURES" and score < 80:
+        return None
+    if mode == "SPOT" and score < 70:
+        return None
+
+    # =========================
+    # TREND FILTER
+    # =========================
+    if direction == "LONG" and trend.iloc[-1] != 1:
+        return None
+    if direction == "SHORT" and trend.iloc[-1] != -1:
+        return None
+
+    # =========================
+    # EMA DISTANCE FILTER
+    # =========================
+    ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
+
+    if direction == "LONG" and entry > ema20 * 1.03:
+        return None
+    if direction == "SHORT" and entry < ema20 * 0.97:
+        return None
+
+    # =========================
+    # ADL CONFIRMATION
+    # =========================
+    adl = accumulation_distribution(df4h)
+    if direction == "LONG" and adl.iloc[-1] <= adl.iloc[-10]:
+        return None
+    if direction == "SHORT" and adl.iloc[-1] >= adl.iloc[-10]:
+        return None
+
+    # =========================
+    # SL STRUCTURE
+    # =========================
+    if direction == "LONG":
+        supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
+        if not supports:
+            return None
+        sl = max(supports) * (1 - ZONE_BUFFER)
+
+    else:  # SHORT
         resistances = [r for r in find_resistance(df1d, SR_LOOKBACK) if r > entry]
         if not resistances:
             return None
-
         sl = min(resistances) * (1 + ZONE_BUFFER)
-        risk = abs(sl - entry) / entry
-        if risk <= 0.002 or risk >= FUTURES_MAX_RISK:
-            return None
-
-        pos_size = calculate_futures_position(balance, entry, sl)
-
-        return {
-            "Time": now_wib(),
-            "CreatedAt": datetime.now(timezone.utc).isoformat(),
-            "Symbol": symbol,
-            "Phase": "DISTRIBUSI_KUAT",
-            "Score": score,
-            "Rating": "⭐"*score,
-            "Entry": round(entry,6),
-            "SL": round(sl,6),
-            "TP1": round(entry - (sl-entry)*TP1_R,6),
-            "TP2": round(entry - (sl-entry)*TP2_R,6),
-            "Status": "OPEN",
-            "Label": "NEW",
-            "AutoLabel": "WAIT",
-            "Mode": "FUTURES",
-            "Direction": "SHORT",
-            "PositionSize": pos_size
-        }
 
     # =========================
-    # ===== LONG (SPOT & FUT) ==
+    # TP CALCULATION
     # =========================
-    if trend.iloc[-1] != 1:
-        return None
-
-    if volume_osc(df4h.volume, VO_FAST, VO_SLOW).iloc[-1] < VO_MIN:
-        return None
-
-    adl = accumulation_distribution(df4h)
-    if adl.iloc[-1] <= adl.iloc[-10]:
-        return None
-
-    ema200 = df1d.close.ewm(span=200).mean()
-    if df1d.close.iloc[-1] < ema200.iloc[-1]:
-        return None
-
-    score = calculate_score(df4h, df1d)
-
-    if mode == "FUTURES":
-        if score <= 8:
-            return None
+    if direction == "LONG":
+        tp1 = entry + (entry - sl) * TP1_R
+        tp2 = entry + (entry - sl) * TP2_R
+        phase = "AKUMULASI_INSTITUSI"
     else:
-        if score < 6:
-            return None
+        tp1 = entry - (sl - entry) * TP1_R
+        tp2 = entry - (sl - entry) * TP2_R
+        phase = "DISTRIBUSI_INSTITUSI"
 
-    ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
-    if entry > ema20 * 1.03:
-        return None
-
-    supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
-    if not supports:
-        return None
-
-    sl = max(supports) * (1 - ZONE_BUFFER)
-    risk = abs(entry - sl) / entry
-    if risk <= 0.002 or risk >= FUTURES_MAX_RISK:
-        return None
-
+    # =========================
+    # POSITION SIZE
+    # =========================
     pos_size = 0.0
     if mode == "FUTURES":
         pos_size = calculate_futures_position(balance, entry, sl)
+        if pos_size <= 0:
+            return None
 
+    # =========================
+    # FINAL SIGNAL OBJECT
+    # =========================
     return {
         "Time": now_wib(),
         "CreatedAt": datetime.now(timezone.utc).isoformat(),
         "Symbol": symbol,
-        "Phase": "AKUMULASI_KUAT",
+        "Phase": phase,
         "Score": score,
-        "Rating": "⭐"*score,
-        "Entry": round(entry,6),
-        "SL": round(sl,6),
-        "TP1": round(entry+(entry-sl)*TP1_R,6),
-        "TP2": round(entry+(entry-sl)*TP2_R,6),
+        "Rating": "⭐" * (score // 10),
+        "Entry": round(entry, 6),
+        "SL": round(sl, 6),
+        "TP1": round(tp1, 6),
+        "TP2": round(tp2, 6),
         "Status": "OPEN",
-        "Label": "NEW",
+        "Label": "INST",
         "AutoLabel": "WAIT",
         "Mode": mode,
-        "Direction": "LONG",
+        "Direction": direction,
         "PositionSize": pos_size
     }
 
@@ -823,6 +831,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
