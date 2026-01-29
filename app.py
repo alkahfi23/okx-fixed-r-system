@@ -439,7 +439,7 @@ def analyze_single_coin(okx, symbol, mode, balance):
         "TP1": None,
         "TP2": None,
         "PositionSize": None,
-        "Reason": []
+        "Reasons": []
     }
 
     try:
@@ -452,36 +452,41 @@ def analyze_single_coin(okx, symbol, mode, balance):
             columns=["t","open","high","low","close","volume"]
         )
     except Exception as e:
-        result["Reason"] = f"Data error: {e}"
+        result["Reasons"].append(f"Data error: {e}")
         return result
 
-    stl, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
     entry = df4h.close.iloc[-1]
+    _, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
 
-    # ===== FUTURES SHORT CHECK =====
-    reasons = []
+    # ===== SCORE HITUNG SEKALI (ANTI BUG) =====
+    score_long = calculate_score(df4h, df1d)
+    score_short = calculate_score_short(df4h, df1d)
 
+    # ==================================================
+    # ================= FUTURES SHORT ==================
+    # ==================================================
     if mode == "FUTURES" and trend.iloc[-1] == -1:
-        score = calculate_score_short(df4h, df1d)
-        result["Score"] = score
+        result["Score"] = score_short
 
-        if score <= 8:
-            reasons.append("Score SHORT < 9 (belum A+)")
-            ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
+        if score_short < 9:
+            result["Reasons"].append("Score SHORT < 9 (belum A+)")
+
+        ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
         if entry < ema20 * 0.97:
-            reasons.append("Harga terlalu jauh dari EMA20 (late short)")
+            result["Reasons"].append("Late SHORT (belum breakdown EMA20)")
 
         adl = accumulation_distribution(df4h)
         if adl.iloc[-1] >= adl.iloc[-10]:
-            reasons.append("ADL belum distribusi (seller belum dominan)")
+            result["Reasons"].append("ADL belum distribusi (seller belum dominan)")
 
         resistances = [r for r in find_resistance(df1d, SR_LOOKBACK) if r > entry]
         if not resistances:
-            reasons.append("Tidak ada resistance valid untuk SL")
+            result["Reasons"].append("Tidak ada resistance valid untuk SL")
 
-        if reasons:
-            result["Reasons"] = reasons
+        if result["Reasons"]:
             return result
+
+        sl = min(resistances) * (1 + ZONE_BUFFER)
 
         result.update({
             "Trend": "SHORT",
@@ -493,35 +498,35 @@ def analyze_single_coin(okx, symbol, mode, balance):
         })
         return result
 
-    # ===== LONG CHECK (SPOT & FUTURES) =====
-    reasons = []
+    # ==================================================
+    # ====================== LONG ======================
+    # ==================================================
+    result["Score"] = score_long
 
     if trend.iloc[-1] != 1:
-        reasons.append("Trend belum bullish (Supertrend merah)")
+        result["Reasons"].append("Trend belum bullish (Supertrend merah)")
 
-        score = calculate_score(df4h, df1d)
-        result["Score"] = score
-
-    if mode == "FUTURES" and score <= 8:
-        reasons.append("Score LONG < 9 (belum A+ Futures)")
-    if mode == "SPOT" and score < 6:
-        reasons.append("Score < 6 (SPOT minimal belum terpenuhi)")
+    if mode == "FUTURES" and score_long < 9:
+        result["Reasons"].append("Score LONG < 9 (belum A+ Futures)")
+    if mode == "SPOT" and score_long < 6:
+        result["Reasons"].append("Score < 6 (SPOT minimal belum terpenuhi)")
 
     ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
     if entry > ema20 * 1.03:
-        reasons.append("Harga terlalu jauh di atas EMA20 (overextended)")
+        result["Reasons"].append("Harga terlalu jauh di atas EMA20 (overextended)")
 
     adl = accumulation_distribution(df4h)
     if adl.iloc[-1] <= adl.iloc[-10]:
-        reasons.append("Belum ada akumulasi kuat (ADL lemah)")
+        result["Reasons"].append("Belum ada akumulasi kuat (ADL lemah)")
 
     supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
     if not supports:
-        reasons.append("Tidak ada support valid untuk SL")
+        result["Reasons"].append("Tidak ada support valid untuk SL")
 
-    if reasons:
-        result["Reasons"] = reasons
+    if result["Reasons"]:
         return result
+
+    sl = max(supports) * (1 - ZONE_BUFFER)
 
     result.update({
         "Trend": "LONG",
@@ -533,7 +538,6 @@ def analyze_single_coin(okx, symbol, mode, balance):
     })
 
     return result
-
 # =====================================================
 # UI
 # =====================================================
@@ -710,11 +714,6 @@ with tab5:
     if st.button("🔍 Analyze"):
         res = analyze_single_coin(okx, symbol, mode_an, bal_an)
 
-        # ===== SAFETY CHECK =====
-        if not res or "Trend" not in res:
-            st.error("Analisa gagal (data tidak lengkap)")
-            st.stop()
-
         st.markdown("## 📊 Hasil Analisa")
         st.markdown(f"### {symbol}")
 
@@ -723,28 +722,24 @@ with tab5:
         c2.metric("Score", res["Score"])
         c3.metric("Mode", mode_an)
 
-        # ===== NO TRADE =====
         if res["Trend"] == "NO TRADE":
             st.error("❌ NO TRADE")
             st.markdown("### 🔎 Alasan Tidak Masuk Kriteria:")
-
-            for reason in res.get("Reasons", []):
-                st.write(f"• {reason}")
-
+            for r in res["Reasons"]:
+                st.write(f"• {r}")
             st.caption("⚠️ Setup belum memenuhi standar A+ system")
 
-        # ===== VALID TRADE =====
         else:
             st.success(f"✅ {res['Trend']} VALID")
             st.markdown("### 📌 Level Trade")
-
             st.json({
-                "Entry": res.get("Entry"),
-                "SL": res.get("SL"),
-                "TP1": res.get("TP1"),
-                "TP2": res.get("TP2"),
-                "Position Size": res.get("PositionSize")
+                "Entry": res["Entry"],
+                "SL": res["SL"],
+                "TP1": res["TP1"],
+                "TP2": res["TP2"],
+                "Position Size": res["PositionSize"]
             })
+
 
 
 
