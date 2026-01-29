@@ -183,6 +183,93 @@ def find_resistance(df, lb):
             levels.append(df.high.iloc[i])
     return sorted(set(levels))
 
+def detect_regime_shift(df4h, df1d, score_data):
+    """
+    Detect institutional regime shift
+    Return: None | dict
+    """
+
+    _, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
+
+    ema200 = df1d.close.ewm(span=200).mean()
+    ema_slope_now = ema200.iloc[-1] - ema200.iloc[-10]
+    ema_slope_prev = ema200.iloc[-10] - ema200.iloc[-20]
+
+    adl = accumulation_distribution(df4h)
+
+    shift_signals = []
+
+    # 1. Trend flip
+    if trend.iloc[-1] != trend.iloc[-3]:
+        shift_signals.append("Supertrend flip")
+
+    # 2. EMA200 slope change
+    if ema_slope_prev > 0 and ema_slope_now < 0:
+        shift_signals.append("EMA200 slope turned bearish")
+    if ema_slope_prev < 0 and ema_slope_now > 0:
+        shift_signals.append("EMA200 slope turned bullish")
+
+    # 3. ADL divergence
+    if adl.iloc[-1] < adl.iloc[-20]:
+        shift_signals.append("Distribution pressure")
+    if adl.iloc[-1] > adl.iloc[-20]:
+        shift_signals.append("Accumulation pressure")
+
+    # 4. Score shock
+    if score_data["TotalScore"] >= 80:
+        shift_signals.append("High institutional participation")
+
+    if len(shift_signals) >= 3:
+        return {
+            "SignalType": "REGIME_SHIFT",
+            "Signals": shift_signals
+        }
+
+    return None
+
+def execution_confirmation(df_ltf, direction):
+    """
+    Confirm precise execution timing
+    """
+
+    ema20 = df_ltf.close.ewm(span=20).mean()
+    ema50 = df_ltf.close.ewm(span=50).mean()
+
+    price = df_ltf.close.iloc[-1]
+    vol_now = df_ltf.volume.iloc[-1]
+    vol_avg = df_ltf.volume.rolling(20).mean().iloc[-1]
+
+    confirmations = []
+
+    # 1. EMA pullback
+    if direction == "LONG" and ema20.iloc[-1] < price < ema20.iloc[-1] * 1.01:
+        confirmations.append("Healthy pullback to EMA20")
+
+    if direction == "SHORT" and ema20.iloc[-1] > price > ema20.iloc[-1] * 0.99:
+        confirmations.append("Healthy pullback to EMA20")
+
+    # 2. EMA structure
+    if direction == "LONG" and ema20.iloc[-1] > ema50.iloc[-1]:
+        confirmations.append("Bullish EMA structure")
+
+    if direction == "SHORT" and ema20.iloc[-1] < ema50.iloc[-1]:
+        confirmations.append("Bearish EMA structure")
+
+    # 3. Volume expansion
+    if vol_now > vol_avg * 1.2:
+        confirmations.append("Volume expansion")
+
+    # 4. Candle control (avoid FOMO)
+    candle_range = df_ltf.high.iloc[-1] - df_ltf.low.iloc[-1]
+    avg_range = (df_ltf.high - df_ltf.low).rolling(20).mean().iloc[-1]
+
+    if candle_range < avg_range * 1.5:
+        confirmations.append("No FOMO candle")
+
+    if len(confirmations) >= 3:
+        return True, confirmations
+
+    return False, confirmations
 # =====================================================
 # SCORE
 # =====================================================
@@ -375,20 +462,25 @@ def calculate_futures_position(balance, entry, sl):
 # =====================================================
 def check_signal(okx, symbol, mode, balance):
     """
-    Institutional-grade signal checker
-    Return: dict (signal) or None
+    FULL INSTITUTIONAL CHECK SIGNAL ENGINE
+
+    Output:
+    - TRADE_EXECUTION
+    - MARKET_WARNING
+    - REGIME_SHIFT
+    - None
     """
 
     # =========================
-    # DATA FETCH
+    # DATA FETCH (HTF)
     # =========================
     try:
         df4h = pd.DataFrame(
-            okx.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
+            okx.fetch_ohlcv(symbol, "4h", limit=200),
             columns=["t","open","high","low","close","volume"]
         )
         df1d = pd.DataFrame(
-            okx.fetch_ohlcv(symbol, DAILY_TF, limit=LIMIT_1D),
+            okx.fetch_ohlcv(symbol, "1d", limit=200),
             columns=["t","open","high","low","close","volume"]
         )
     except:
@@ -396,25 +488,56 @@ def check_signal(okx, symbol, mode, balance):
 
     entry = df4h.close.iloc[-1]
     _, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
-
     direction = "SHORT" if trend.iloc[-1] == -1 else "LONG"
 
     # =========================
-    # INSTITUTIONAL SCORE (0–100)
+    # INSTITUTIONAL SCORE
     # =========================
     score_data = calculate_institutional_score(
         df4h, df1d, direction=direction
     )
-
     score = score_data["TotalScore"]
 
     # =========================
-    # SCORE THRESHOLD
+    # SCORE GATE
     # =========================
     if mode == "FUTURES" and score < 80:
         return None
     if mode == "SPOT" and score < 70:
         return None
+
+    # =========================
+    # MARKET REGIME
+    # =========================
+    regime = detect_market_regime(df4h, df1d, score_data)
+
+    # =========================
+    # REGIME SHIFT DETECTION
+    # =========================
+    shift = detect_regime_shift(df4h, df1d, score_data)
+    if shift:
+        return {
+            "SignalType": "REGIME_SHIFT",
+            "Symbol": symbol,
+            "Regime": regime,
+            "Details": shift
+        }
+
+    # =========================
+    # REGIME FILTER
+    # =========================
+    if mode == "SPOT":
+        if regime != "REGIME_ACCUMULATION":
+            return {
+                "SignalType": "MARKET_WARNING",
+                "Symbol": symbol,
+                "Regime": regime,
+                "Message": "NO BUY ZONE (Institutional Distribution)"
+            }
+
+    if mode == "FUTURES":
+        if regime not in ["REGIME_DISTRIBUTION", "REGIME_MARKDOWN"]:
+            return None
 
     # =========================
     # TREND FILTER
@@ -451,12 +574,26 @@ def check_signal(okx, symbol, mode, balance):
         if not supports:
             return None
         sl = max(supports) * (1 - ZONE_BUFFER)
-
-    else:  # SHORT
+    else:
         resistances = [r for r in find_resistance(df1d, SR_LOOKBACK) if r > entry]
         if not resistances:
             return None
         sl = min(resistances) * (1 + ZONE_BUFFER)
+
+    # =========================
+    # EXECUTION CONFIRMATION (LTF)
+    # =========================
+    try:
+        df_ltf = pd.DataFrame(
+            okx.fetch_ohlcv(symbol, "15m", limit=100),
+            columns=["t","open","high","low","close","volume"]
+        )
+    except:
+        return None
+
+    exec_ok, exec_reasons = execution_confirmation(df_ltf, direction)
+    if not exec_ok:
+        return None
 
     # =========================
     # TP CALCULATION
@@ -480,25 +617,25 @@ def check_signal(okx, symbol, mode, balance):
             return None
 
     # =========================
-    # FINAL SIGNAL OBJECT
+    # FINAL SIGNAL
     # =========================
     return {
+        "SignalType": "TRADE_EXECUTION",
         "Time": now_wib(),
         "CreatedAt": datetime.now(timezone.utc).isoformat(),
         "Symbol": symbol,
         "Phase": phase,
+        "Regime": regime,
         "Score": score,
-        "Rating": "⭐" * (score // 10),
+        "ScoreDetail": score_data,
         "Entry": round(entry, 6),
         "SL": round(sl, 6),
         "TP1": round(tp1, 6),
         "TP2": round(tp2, 6),
-        "Status": "OPEN",
-        "Label": "INST",
-        "AutoLabel": "WAIT",
         "Mode": mode,
         "Direction": direction,
-        "PositionSize": pos_size
+        "PositionSize": pos_size,
+        "ExecutionReasons": exec_reasons
     }
 
 def analyze_single_coin(okx, symbol, mode, balance):
@@ -831,6 +968,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
