@@ -709,26 +709,29 @@ with tab5:
 
     if st.button("🔍 Analyze"):
         res = analyze_single_coin(okx, symbol, mode_an, bal_an)
-        st.markdown(f"### 📊 Hasil Analisa: `{symbol}`")
-        if res["Trend"] == "NO TRADE":
+        st.markdown(f"## 📊 Hasil Analisa: `{sym}`")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Trend", r["Trend"])
+        c2.metric("Score", r["Score"])
+        c3.metric("Mode", MODE)
+
+        if r["Trend"] == "NO TRADE":
             st.error("❌ NO TRADE")
             st.markdown("### 🔎 Alasan Tidak Masuk Kriteria:")
-        for r in res["Reasons"]:
-            st.write(f"• {r}")
-        else:
-            c1,c2,c3 = st.columns(3)
-            c1.metric("Trend", res["Trend"])
-            c2.metric("Score", res["Score"])
-            c3.metric("Mode", mode_an)
+        for reason in r["Reasons"]:
+            st.write(f"• {reason}")
 
-            st.markdown("### 📌 Level")
+        else:
+            st.success(f"✅ {r['Trend']} VALID")
+            st.markdown("### 📌 Level Trade")
             st.json({
-                "Entry": res["Entry"],
-                "SL": res["SL"],
-                "TP1": res["TP1"],
-                "TP2": res["TP2"],
-                "Position Size": res["PositionSize"]
+                    "Entry": r["Entry"],
+                    "SL": r["SL"],
+                    "TP1": r["TP1"],
+                    "TP2": r["TP2"],
+                    "Position Size": r["PositionSize"]
             })
+
 
 
 
