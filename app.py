@@ -238,6 +238,71 @@ def calculate_score_short(df4h, df1d):
 
     return score
 
+def calculate_institutional_score(df4h, df1d, direction="LONG"):
+    price = df4h.close.iloc[-1]
+
+    ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
+    ema50 = df4h.close.ewm(span=50).mean().iloc[-1]
+    ema200 = df1d.close.ewm(span=200).mean().iloc[-1]
+
+    # =========================
+    # 1️⃣ MARKET STRUCTURE (40)
+    # =========================
+    structure = 0
+
+    if direction == "LONG":
+        if price > ema20: structure += 15
+        if ema20 > ema50: structure += 10
+        if ema50 > ema200: structure += 10
+        if price > ema200: structure += 5
+    else:  # SHORT
+        if price < ema20: structure += 15
+        if ema20 < ema50: structure += 10
+        if ema50 < ema200: structure += 10
+        if price < ema200: structure += 5
+
+    structure = min(structure, 40)
+
+    # =========================
+    # 2️⃣ VOLUME EXPANSION (30)
+    # =========================
+    vo = volume_osc(df4h.volume, VO_FAST, VO_SLOW).iloc[-1]
+
+    volume = 0
+    if vo > 3: volume += 10
+    if vo > 10: volume += 10
+    if vo > 20: volume += 10
+
+    volume = min(volume, 30)
+
+    # =========================
+    # 3️⃣ ADL FLOW (30)
+    # =========================
+    adl = accumulation_distribution(df4h)
+
+    adl_score = 0
+    if direction == "LONG":
+        if adl.iloc[-1] > adl.iloc[-5]: adl_score += 10
+        if adl.iloc[-1] > adl.iloc[-10]: adl_score += 10
+        if adl.iloc[-1] > adl.iloc[-20]: adl_score += 10
+    else:
+        if adl.iloc[-1] < adl.iloc[-5]: adl_score += 10
+        if adl.iloc[-1] < adl.iloc[-10]: adl_score += 10
+        if adl.iloc[-1] < adl.iloc[-20]: adl_score += 10
+
+    adl_score = min(adl_score, 30)
+
+    # =========================
+    # FINAL SCORE
+    # =========================
+    total_score = structure + volume + adl_score
+
+    return {
+        "TotalScore": total_score,
+        "StructureScore": structure,
+        "VolumeScore": volume,
+        "ADLScore": adl_score
+    }
 # =====================================================
 # AUTO LABEL (SPOT ONLY)
 # =====================================================
@@ -434,6 +499,7 @@ def analyze_single_coin(okx, symbol, mode, balance):
         "Mode": mode,
         "Trend": "NO TRADE",
         "Score": 0,
+        "ScoreDetail": {},
         "Entry": None,
         "SL": None,
         "TP1": None,
@@ -442,6 +508,9 @@ def analyze_single_coin(okx, symbol, mode, balance):
         "Reasons": []
     }
 
+    # =========================
+    # DATA FETCH
+    # =========================
     try:
         df4h = pd.DataFrame(
             okx.fetch_ohlcv(symbol, ENTRY_TF, limit=LIMIT_4H),
@@ -458,83 +527,98 @@ def analyze_single_coin(okx, symbol, mode, balance):
     entry = df4h.close.iloc[-1]
     _, trend = supertrend(df4h, ATR_PERIOD, MULTIPLIER)
 
-    # ===== SCORE HITUNG SEKALI (ANTI BUG) =====
-    score_long = calculate_score(df4h, df1d)
-    score_short = calculate_score_short(df4h, df1d)
+    direction = "SHORT" if trend.iloc[-1] == -1 else "LONG"
 
-    # ==================================================
-    # ================= FUTURES SHORT ==================
-    # ==================================================
-    if mode == "FUTURES" and trend.iloc[-1] == -1:
-        result["Score"] = score_short
+    # =========================
+    # INSTITUTIONAL SCORE
+    # =========================
+    score_data = calculate_institutional_score(
+        df4h, df1d, direction=direction
+    )
 
-        if score_short < 9:
-            result["Reasons"].append("Score SHORT < 9 (belum A+)")
+    score = score_data["TotalScore"]
+    result["Score"] = score
+    result["ScoreDetail"] = score_data
 
-        ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
-        if entry < ema20 * 0.97:
-            result["Reasons"].append("Late SHORT (belum breakdown EMA20)")
+    # =========================
+    # SCORE THRESHOLD
+    # =========================
+    if mode == "FUTURES" and score < 80:
+        result["Reasons"].append("Institutional score < 80 (Futures)")
+    if mode == "SPOT" and score < 70:
+        result["Reasons"].append("Institutional score < 70 (Spot)")
 
-        adl = accumulation_distribution(df4h)
-        if adl.iloc[-1] >= adl.iloc[-10]:
-            result["Reasons"].append("ADL belum distribusi (seller belum dominan)")
+    # =========================
+    # TREND FILTER
+    # =========================
+    if direction == "LONG" and trend.iloc[-1] != 1:
+        result["Reasons"].append("Supertrend belum bullish")
+    if direction == "SHORT" and trend.iloc[-1] != -1:
+        result["Reasons"].append("Supertrend belum bearish")
 
+    # =========================
+    # EMA DISTANCE FILTER
+    # =========================
+    ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
+
+    if direction == "LONG" and entry > ema20 * 1.03:
+        result["Reasons"].append("Harga terlalu jauh di atas EMA20 (overextended)")
+    if direction == "SHORT" and entry < ema20 * 0.97:
+        result["Reasons"].append("Harga terlalu jauh di bawah EMA20 (late short)")
+
+    # =========================
+    # ADL CONFIRMATION
+    # =========================
+    adl = accumulation_distribution(df4h)
+    if direction == "LONG" and adl.iloc[-1] <= adl.iloc[-10]:
+        result["Reasons"].append("Belum ada akumulasi kuat (ADL)")
+    if direction == "SHORT" and adl.iloc[-1] >= adl.iloc[-10]:
+        result["Reasons"].append("Belum ada distribusi kuat (ADL)")
+
+    # =========================
+    # SL STRUCTURE
+    # =========================
+    if direction == "LONG":
+        supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
+        if not supports:
+            result["Reasons"].append("Tidak ada support valid untuk SL")
+        else:
+            sl = max(supports) * (1 - ZONE_BUFFER)
+
+    else:  # SHORT
         resistances = [r for r in find_resistance(df1d, SR_LOOKBACK) if r > entry]
         if not resistances:
             result["Reasons"].append("Tidak ada resistance valid untuk SL")
+        else:
+            sl = min(resistances) * (1 + ZONE_BUFFER)
 
-        if result["Reasons"]:
-            return result
-
-        sl = min(resistances) * (1 + ZONE_BUFFER)
-
-        result.update({
-            "Trend": "SHORT",
-            "Entry": round(entry,6),
-            "SL": round(sl,6),
-            "TP1": round(entry - (sl-entry)*TP1_R,6),
-            "TP2": round(entry - (sl-entry)*TP2_R,6),
-            "PositionSize": calculate_futures_position(balance, entry, sl)
-        })
-        return result
-
-    # ==================================================
-    # ====================== LONG ======================
-    # ==================================================
-    result["Score"] = score_long
-
-    if trend.iloc[-1] != 1:
-        result["Reasons"].append("Trend belum bullish (Supertrend merah)")
-
-    if mode == "FUTURES" and score_long < 9:
-        result["Reasons"].append("Score LONG < 9 (belum A+ Futures)")
-    if mode == "SPOT" and score_long < 6:
-        result["Reasons"].append("Score < 6 (SPOT minimal belum terpenuhi)")
-
-    ema20 = df4h.close.ewm(span=20).mean().iloc[-1]
-    if entry > ema20 * 1.03:
-        result["Reasons"].append("Harga terlalu jauh di atas EMA20 (overextended)")
-
-    adl = accumulation_distribution(df4h)
-    if adl.iloc[-1] <= adl.iloc[-10]:
-        result["Reasons"].append("Belum ada akumulasi kuat (ADL lemah)")
-
-    supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
-    if not supports:
-        result["Reasons"].append("Tidak ada support valid untuk SL")
-
+    # =========================
+    # FINAL DECISION
+    # =========================
     if result["Reasons"]:
         return result
 
-    sl = max(supports) * (1 - ZONE_BUFFER)
+    # =========================
+    # TP & POSITION SIZE
+    # =========================
+    if direction == "LONG":
+        tp1 = entry + (entry - sl) * TP1_R
+        tp2 = entry + (entry - sl) * TP2_R
+    else:
+        tp1 = entry - (sl - entry) * TP1_R
+        tp2 = entry - (sl - entry) * TP2_R
+
+    pos_size = None
+    if mode == "FUTURES":
+        pos_size = calculate_futures_position(balance, entry, sl)
 
     result.update({
-        "Trend": "LONG",
-        "Entry": round(entry,6),
-        "SL": round(sl,6),
-        "TP1": round(entry+(entry-sl)*TP1_R,6),
-        "TP2": round(entry+(entry-sl)*TP2_R,6),
-        "PositionSize": calculate_futures_position(balance, entry, sl) if mode=="FUTURES" else None
+        "Trend": direction,
+        "Entry": round(entry, 6),
+        "SL": round(sl, 6),
+        "TP1": round(tp1, 6),
+        "TP2": round(tp2, 6),
+        "PositionSize": pos_size
     })
 
     return result
@@ -739,6 +823,7 @@ with tab5:
                 "TP2": res["TP2"],
                 "Position Size": res["PositionSize"]
             })
+
 
 
 
