@@ -78,14 +78,32 @@ def calculate_futures_position(balance, entry, sl):
 # FILE HANDLER
 # =====================================================
 def load_signal_history():
+    cols = [
+        "Time","CreatedAt","Symbol","Phase","Score","Rating",
+        "Entry","SL","TP1","TP2",
+        "Status","Label","AutoLabel",
+        "Mode","Direction","PositionSize"
+    ]
+
     if not os.path.exists(SIGNAL_LOG_FILE):
-        pd.DataFrame(columns=[
-            "Time","CreatedAt","Symbol","Phase","Score","Rating",
-            "Entry","SL","TP1","TP2",
-            "Status","Label","AutoLabel",
-            "Mode","Direction","PositionSize"
-        ]).to_csv(SIGNAL_LOG_FILE,index=False)
-    return pd.read_csv(SIGNAL_LOG_FILE)
+        pd.DataFrame(columns=cols).to_csv(SIGNAL_LOG_FILE, index=False)
+
+    df = pd.read_csv(SIGNAL_LOG_FILE)
+
+    # 🔥 AUTO MIGRATION (FIX KEYERROR)
+    for c in cols:
+        if c not in df.columns:
+            if c == "Mode":
+                df[c] = "SPOT"          # default aman
+            elif c == "Direction":
+                df[c] = "LONG"
+            elif c == "PositionSize":
+                df[c] = 0
+            else:
+                df[c] = ""
+
+    df.to_csv(SIGNAL_LOG_FILE, index=False)
+    return df
 
 def load_trade_results():
     if not os.path.exists(TRADE_RESULT_FILE):
@@ -400,3 +418,4 @@ with tab4:
             df.to_csv(index=False),
             "futures_trades.csv"
         )
+
